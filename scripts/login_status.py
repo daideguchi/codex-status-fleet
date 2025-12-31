@@ -68,6 +68,11 @@ def _extract_email_from_auth_json(path: str) -> str | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Show which accounts have auth.json saved.")
     parser.add_argument("--config", required=True, help="Path to accounts.json")
+    parser.add_argument(
+        "--need-login",
+        action="store_true",
+        help="Print labels that need login (one per line) and exit.",
+    )
     args = parser.parse_args()
 
     root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -120,6 +125,12 @@ def main() -> int:
             row["note"] = "unknown provider"
 
         rows.append(row)
+
+    if args.need_login:
+        for it in rows:
+            if it.get("provider") == "codex" and it.get("enabled") and not it.get("logged_in"):
+                print(it.get("label") or "")
+        return 0
 
     print(json.dumps({"items": rows}, ensure_ascii=False, indent=2))
     return 0

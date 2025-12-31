@@ -838,6 +838,27 @@ def _refresh_one_codex(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
     account_email = _extract_account_email_from_auth(auth_path) if auth_path.is_file() else None
 
     ts = _now_iso()
+    if not auth_path.is_file():
+        raw = "[auth_required] missing auth.json (run codex login for this account)"
+        parsed = {
+            "probe_error": True,
+            "error_type": "AuthRequired",
+            "error": f"missing auth.json: {auth_path}",
+            "normalized": {
+                "provider": "codex",
+                "account_email": account_email,
+                "expected_email": acc.expected_email,
+                "expected_email_match": None,
+                "expected_planType": acc.expected_plan_type,
+                "expected_planType_match": None,
+                "requiresAuth": True,
+                "requiresOpenaiAuth": True,
+                "windows": {},
+            },
+        }
+        payload = _post_status_event(acc.label, raw, parsed, ts)
+        return "auth required", payload
+
     try:
         rate_result, user_agent = _rpc_rate_limits(account_home)
         raw = json.dumps(rate_result, ensure_ascii=False, separators=(",", ":"))
