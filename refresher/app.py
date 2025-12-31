@@ -153,8 +153,18 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _write_json_atomic(path: Path, obj: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    text = json.dumps(obj, ensure_ascii=False, indent=2) + "\n"
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        tmp.replace(path)
+    except OSError:
+        # Docker Desktop bind-mounting a single file (./accounts.json:/config/accounts.json)
+        # may fail os.replace() with EBUSY. Fall back to a direct overwrite.
+        path.write_text(text, encoding="utf-8")
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
