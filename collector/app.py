@@ -208,6 +208,26 @@ UI_HTML = """<!doctype html>
         if (!iso) return "-";
         try { return new Date(iso).toLocaleString(); } catch { return String(iso); }
       }
+      function pad2(n) {
+        return String(n).padStart(2, "0");
+      }
+      function fmtResetShort(iso) {
+        if (!iso) return null;
+        try {
+          const d = new Date(iso);
+          if (!Number.isFinite(d.getTime())) return null;
+          const now = new Date();
+          const sameDay =
+            d.getFullYear() === now.getFullYear() &&
+            d.getMonth() === now.getMonth() &&
+            d.getDate() === now.getDate();
+          const hhmm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+          if (sameDay) return hhmm;
+          return `${d.getMonth() + 1}/${d.getDate()} ${hhmm}`;
+        } catch {
+          return null;
+        }
+      }
       function safe(v, fallback="-") {
         if (v === null || v === undefined || v === "") return fallback;
         return String(v);
@@ -372,6 +392,7 @@ UI_HTML = """<!doctype html>
           const cls = pctClass(leftPct);
           const leftText = fmtPct(leftPct);
           const reset = fmtTs(w.resetsAtIsoUtc);
+          const resetShort = fmtResetShort(w.resetsAtIsoUtc);
 
           const metaParts = [];
           if (w.remaining !== null && w.remaining !== undefined && w.limit !== null && w.limit !== undefined) {
@@ -388,6 +409,7 @@ UI_HTML = """<!doctype html>
               <div class="bar" aria-label="${esc(title)}">
                 <div class="fill ${cls}" style="width: ${width}%;"></div>
               </div>
+              ${resetShort ? `<span class="mono small muted">r ${esc(resetShort)}</span>` : ""}
             </div>
           `);
         };
