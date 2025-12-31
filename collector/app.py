@@ -402,7 +402,7 @@ UI_HTML = """<!doctype html>
 	        const r = _reg(item);
 	        const email = _lc(n.account_email || n.expected_email || r.expected_email || "");
 	        const note = _lc(r.note || "");
-	        return (email || "") + "\n" + (note || "");
+	        return (email || "") + "\\n" + (note || "");
 	      }
 
 	      function _providerKey(item) {
