@@ -99,6 +99,7 @@ UI_HTML = """<!doctype html>
 	          <option value="credits">Credits</option>
 	        </select>
 	      </label>
+	      <button id="resetSort" title="Reset sorting to default order">Default order</button>
 	      <label class="muted">Filter <input id="filter" placeholder="email / note / provider" /></label>
 	      <span id="summary" class="muted"></span>
 	      <span id="status" class="muted"></span>
@@ -239,6 +240,7 @@ UI_HTML = """<!doctype html>
 	      const addKeysBtn = $("addKeys");
 	      const addFwBtn = $("addFw");
 	      const viewModeEl = $("viewMode");
+	      const resetSortBtn = $("resetSort");
 	      const filterEl = $("filter");
       const addModal = $("addModal");
       const addClose = $("addClose");
@@ -894,7 +896,7 @@ UI_HTML = """<!doctype html>
 
         const limitBlocks = [];
         const shortName = (name) => {
-          if (name === "weekly") return "wk";
+          if (name === "weekly") return "week";
           if (name === "requests") return "req";
           if (name === "tokens") return "tok";
           return name;
@@ -960,7 +962,7 @@ UI_HTML = """<!doctype html>
         }
         if (rw) {
           const short = fmtResetShort(rw) || fmtTs(rw);
-          resetsParts.push(`wk ${short}`);
+          resetsParts.push(`week ${short}`);
           resetsTitleParts.push(`weekly resets ${fmtTs(rw)}`);
         }
         const resetsText = resetsParts.join(" · ");
@@ -1325,6 +1327,7 @@ UI_HTML = """<!doctype html>
         if (noteModal.classList.contains("open")) setNoteModalOpen(false);
       });
       filterEl.addEventListener("input", renderFromCache);
+      if (resetSortBtn) resetSortBtn.addEventListener("click", () => setSort(null));
       if (viewModeEl) {
         viewModeEl.addEventListener("change", () => {
           const v = (viewModeEl.value || "").trim();
