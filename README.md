@@ -5,6 +5,11 @@
 - Codex: `codex app-server` の JSON-RPC（`account/rateLimits/read`）
 - Claude: Anthropic API への最小リクエストで rate limit ヘッダを取得（キーはローカルに保存）
 
+注意:
+
+- 自分が管理権限を持つアカウント/キーのみを登録してください（各サービスの利用規約に従ってください）
+- `accounts/` と `accounts.json` はローカル専用です（`.gitignore` 済み）
+
 端末 UI（`/status`）のスクレイピングではなく、**構造化された rate limit 情報**（`usedPercent` / `resetsAt` / `windowDurationMins` など）をそのまま保存します。
 
 メモ:
