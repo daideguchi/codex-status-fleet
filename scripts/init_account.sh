@@ -2,14 +2,64 @@
 set -euo pipefail
 
 if [[ "${1:-}" == "" ]]; then
-  echo "Usage: $0 <account_label> [codex login args...]" >&2
+  echo "Usage: $0 <account_label|email> [codex login args...]" >&2
   exit 2
 fi
 
-label="$1"
+input="$1"
 shift
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+config_path="${root_dir}/accounts.json"
+
+label="${input}"
+if [[ "${input}" == *"@"* ]]; then
+  email="${input}"
+  if [[ "${email}" == acc_* ]]; then
+    candidate="${email#acc_}"
+    if [[ "${candidate}" == *"@"* ]]; then
+      email="${candidate}"
+    fi
+  fi
+
+  label="$(
+    python3 - "${email}" "${config_path}" <<'PY'
+import json
+import os
+import re
+import sys
+
+email = (sys.argv[1] or "").strip().lower()
+config_path = sys.argv[2]
+
+def make_label_from_email(e: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "_", e).strip("_")
+    return f"acc_{s}" if s else "acc_account"
+
+label = make_label_from_email(email)
+try:
+    if os.path.isfile(config_path):
+        cfg = json.load(open(config_path, "r", encoding="utf-8"))
+        for a in cfg.get("accounts", []):
+            if not isinstance(a, dict):
+                continue
+            exp = (a.get("expected_email") or "").strip().lower()
+            if exp and exp == email:
+                l = (a.get("label") or "").strip()
+                if l:
+                    label = l
+                break
+except Exception:
+    pass
+
+print(label)
+PY
+  )"
+  label="$(printf "%s" "${label}" | tr -d '\n')"
+  echo "==> Interpreted as email: ${email}"
+  echo "==> Using label: ${label}"
+fi
+
 acc_home="${root_dir}/accounts/${label}"
 
 mkdir -p "${acc_home}"

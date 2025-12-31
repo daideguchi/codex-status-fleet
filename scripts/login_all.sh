@@ -90,12 +90,24 @@ while IFS= read -r label; do
     cp -p "${auth_path}" "${bak}"
     rm -f "${auth_path}"
     echo "==> ${label}: force re-login (backup: ${bak})"
-    if ! ./scripts/init_account.sh "${label}" "${pass_args[@]}"; then
-      echo "==> ${label}: login failed; restoring backup (${bak})" >&2
-      cp -p "${bak}" "${auth_path}" || true
-      exit 1
+    if (( ${#pass_args[@]} )); then
+      if ! ./scripts/init_account.sh "${label}" "${pass_args[@]}"; then
+        echo "==> ${label}: login failed; restoring backup (${bak})" >&2
+        cp -p "${bak}" "${auth_path}" || true
+        exit 1
+      fi
+    else
+      if ! ./scripts/init_account.sh "${label}"; then
+        echo "==> ${label}: login failed; restoring backup (${bak})" >&2
+        cp -p "${bak}" "${auth_path}" || true
+        exit 1
+      fi
     fi
     continue
   fi
-  ./scripts/init_account.sh "${label}" "${pass_args[@]}"
+  if (( ${#pass_args[@]} )); then
+    ./scripts/init_account.sh "${label}" "${pass_args[@]}"
+  else
+    ./scripts/init_account.sh "${label}"
+  fi
 done <<< "${labels}"

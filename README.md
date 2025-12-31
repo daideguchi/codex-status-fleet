@@ -67,6 +67,12 @@ cp accounts.example.json accounts.json
 ./scripts/init_account.sh acc2
 ```
 
+`init_account.sh` は `accounts.json` がある場合、`expected_email` から label を引けるので、メールを渡してもOKです（よくあるミス防止）:
+
+```bash
+./scripts/init_account.sh you@example.com
+```
+
 注意: ふつうに `codex login` を実行すると `~/.codex` に保存されます。Fleet が参照するのは **`accounts/<label>/.codex/`** なので、上の `init_account.sh` を使う（または下の capture を使う）必要があります。
 
 すでに `~/.codex` にログイン済みのアカウントがある場合（今ログインしたアカウントを保存したい）:
@@ -164,6 +170,7 @@ python3 scripts/add_accounts.py --config accounts.json --in emails.txt --plan pl
 - ログイン済み一覧: `python3 scripts/login_status.py --config accounts.json`
 - 未ログインだけ（label一覧）: `python3 scripts/login_status.py --config accounts.json --need-login`
 - auth.json をバックアップから復元: `python3 scripts/restore_auth.py --config accounts.json`
+- 誤ったディレクトリにログインしてしまった場合の救済（`accounts/acc_<email>/...` → `accounts/<label>/...`）: `python3 scripts/claim_misnamed_auth.py --config accounts.json`
 - メール一覧を追加: `python3 scripts/add_accounts.py --config accounts.json --in emails.txt --plan plus`
 - レジストリ一括登録のみ: `python3 scripts/push_registry.py --config accounts.json`
 - まとめてログイン（未ログインのみ）: `./scripts/login_all.sh accounts.json`
