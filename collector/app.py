@@ -46,6 +46,7 @@ UI_HTML = """<!doctype html>
       .bad { color: #d55; border-color: #d554; }
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
       .muted { opacity: 0.8; }
+      .nowrap { white-space: nowrap; }
       .right { text-align: right; }
       .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
       .modal { position: fixed; inset: 0; background: #0007; display: none; align-items: center; justify-content: center; padding: 16px; }
@@ -88,6 +89,8 @@ UI_HTML = """<!doctype html>
           <th>Account / Note</th>
           <th>Plan / Model</th>
           <th>Limits</th>
+          <th class="nowrap">5h reset</th>
+          <th class="nowrap">Weekly reset</th>
           <th>Last update</th>
           <th>State</th>
           <th>Action</th>
@@ -380,6 +383,14 @@ UI_HTML = """<!doctype html>
 
         const providerHtml = providerRaw ? `<span class="pill mono">${esc(providerRaw)}</span>` : "-";
 
+        const resetCell = (w) => {
+          if (!w || typeof w !== "object") return "-";
+          const full = fmtTs(w.resetsAtIsoUtc);
+          if (!w.resetsAtIsoUtc || full === "-") return "-";
+          const short = fmtResetShort(w.resetsAtIsoUtc) || full;
+          return `<span class="mono nowrap" title="resets ${esc(full)}">${esc(short)}</span>`;
+        };
+
         const limitBlocks = [];
         const addLimitBlock = (name, w) => {
           if (!w || typeof w !== "object") return;
@@ -392,7 +403,6 @@ UI_HTML = """<!doctype html>
           const cls = pctClass(leftPct);
           const leftText = fmtPct(leftPct);
           const reset = fmtTs(w.resetsAtIsoUtc);
-          const resetShort = fmtResetShort(w.resetsAtIsoUtc);
 
           const metaParts = [];
           if (w.remaining !== null && w.remaining !== undefined && w.limit !== null && w.limit !== undefined) {
@@ -409,7 +419,6 @@ UI_HTML = """<!doctype html>
               <div class="bar" aria-label="${esc(title)}">
                 <div class="fill ${cls}" style="width: ${width}%;"></div>
               </div>
-              ${resetShort ? `<span class="mono small muted">r ${esc(resetShort)}</span>` : ""}
             </div>
           `);
         };
@@ -423,6 +432,8 @@ UI_HTML = """<!doctype html>
           addLimitBlock(k, windows[k]);
         }
         const limitsHtml = limitBlocks.length ? `<div class="limits">${limitBlocks.join("")}</div>` : "-";
+        const reset5hHtml = resetCell(windows["5h"]);
+        const resetWeeklyHtml = resetCell(windows["weekly"]);
 
         return `
           <tr>
@@ -431,6 +442,8 @@ UI_HTML = """<!doctype html>
             <td>${accountHtml}</td>
             <td class="mono">${esc(planOrModel)}</td>
             <td>${limitsHtml}</td>
+            <td class="mono nowrap">${reset5hHtml}</td>
+            <td class="mono nowrap">${resetWeeklyHtml}</td>
             <td class="mono">${esc(fmtTs(lastUpdate))}</td>
             <td>${state}</td>
             <td><button data-label="${encodeURIComponent(safe(item.account_label))}">Update</button></td>
