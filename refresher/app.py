@@ -33,11 +33,15 @@ HTTP_TIMEOUT_SEC = float(os.getenv("HTTP_TIMEOUT_SEC", "20.0"))
 ANTHROPIC_API_URL = os.getenv("ANTHROPIC_API_URL", "https://api.anthropic.com/v1/messages")
 ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01")
 ANTHROPIC_MODEL_DEFAULT = os.getenv("ANTHROPIC_MODEL_DEFAULT", "claude-3-5-haiku-latest")
+FIREWORKS_BASE_URL_DEFAULT = os.getenv(
+    "FIREWORKS_BASE_URL_DEFAULT", "https://api.fireworks.ai/inference/v1"
+).rstrip("/")
 
 _JWT_RE = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 _EMAIL_FIND_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _ANTHROPIC_KEY_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
+_FIREWORKS_KEY_LINE_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
 
 app = FastAPI(title="Codex Status Refresher")
 
@@ -341,6 +345,83 @@ def _normalize_anthropic(
     return normalized
 
 
+def _fireworks_models_url(base_url: str | None) -> str:
+    base = (base_url or FIREWORKS_BASE_URL_DEFAULT).strip().rstrip("/")
+    if not base:
+        base = FIREWORKS_BASE_URL_DEFAULT
+    return f"{base}/models"
+
+
+def _fireworks_request_rate_limits(api_key: str, base_url: str | None) -> tuple[int, dict[str, str]]:
+    url = _fireworks_models_url(base_url)
+    req = urllib.request.Request(
+        url,
+        headers={
+            "accept": "application/json",
+            "authorization": f"Bearer {api_key}",
+            "user-agent": f"{CLIENT_NAME}/{CLIENT_VERSION}",
+        },
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
+            _ = resp.read()
+            return int(getattr(resp, "status", 200)), _headers_to_dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        _ = e.read()
+        return int(getattr(e, "code", 0) or 0), _headers_to_dict(e.headers)
+
+
+def _normalize_fireworks(
+    http_status: int,
+    headers: dict[str, str],
+    expected: AccountConfig,
+) -> dict[str, Any]:
+    normalized: dict[str, Any] = {"provider": "fireworks"}
+
+    if expected.expected_email:
+        normalized["expected_email"] = expected.expected_email
+        normalized["expected_email_match"] = None
+
+    if expected.expected_plan_type:
+        normalized["expected_planType"] = expected.expected_plan_type
+        normalized["expected_planType_match"] = None
+
+    if http_status in (401, 403):
+        normalized["requiresAuth"] = True
+
+    # Fireworks rate limit headers (best-effort).
+    # Docs: https://docs.fireworks.ai/guides/quotas_usage/rate-limits
+    req_limit = _parse_int_header(headers, "x-ratelimit-limit-requests")
+    req_rem = _parse_int_header(headers, "x-ratelimit-remaining-requests")
+    over_limit_raw = (headers.get("x-ratelimit-over-limit") or "").strip().lower()
+    over_limit = over_limit_raw == "yes"
+
+    windows: dict[str, Any] = {}
+
+    if isinstance(req_limit, int) and req_limit > 0:
+        used = None
+        left = None
+        if isinstance(req_rem, int) and req_rem >= 0:
+            left = int(max(0, min(100, round((req_rem / req_limit) * 100))))
+            used = int(max(0, min(100, 100 - left)))
+        windows["requests"] = {
+            "source": "requests",
+            "limit": req_limit,
+            "remaining": req_rem,
+            "usedPercent": used,
+            "leftPercent": left,
+            "resetsAt": None,
+            "resetsAtIsoUtc": None,
+            "resetRaw": None,
+            "overLimit": over_limit if over_limit_raw else None,
+        }
+
+    normalized["windows"] = windows
+    return normalized
+
+
 @dataclass(frozen=True)
 class AccountConfig:
     label: str
@@ -349,6 +430,8 @@ class AccountConfig:
     expected_plan_type: str | None
     enabled: bool
     anthropic_model: str | None = None
+    fireworks_model: str | None = None
+    fireworks_base_url: str | None = None
 
 
 def _is_codex_provider(provider: str) -> bool:
@@ -359,6 +442,11 @@ def _is_codex_provider(provider: str) -> bool:
 def _is_anthropic_provider(provider: str) -> bool:
     p = (provider or "").strip().lower()
     return p in ("anthropic", "claude", "claude_api", "anthropic_api")
+
+
+def _is_fireworks_provider(provider: str) -> bool:
+    p = (provider or "").strip().lower()
+    return p in ("fireworks", "fireworks_ai", "fireworks_api")
 
 
 def _load_accounts(only_label: str | None, include_disabled: bool) -> list[AccountConfig]:
@@ -384,7 +472,18 @@ def _load_accounts(only_label: str | None, include_disabled: bool) -> list[Accou
         expected_plan_type = (
             (acc.get("expected_planType") or acc.get("expected_plan_type") or "").strip() or None
         )
-        anthropic_model = (acc.get("anthropic_model") or acc.get("model") or "").strip() or None
+        anthropic_model = None
+        fireworks_model = None
+        fireworks_base_url = None
+        if _is_anthropic_provider(provider):
+            anthropic_model = (acc.get("anthropic_model") or acc.get("model") or "").strip() or None
+        if _is_fireworks_provider(provider):
+            fireworks_model = (acc.get("fireworks_model") or acc.get("model") or "").strip() or None
+            fireworks_base_url = (
+                (acc.get("fireworks_base_url") or acc.get("base_url") or "").strip() or None
+            )
+            if fireworks_base_url:
+                fireworks_base_url = fireworks_base_url.rstrip("/")
         out.append(
             AccountConfig(
                 label=label,
@@ -393,6 +492,8 @@ def _load_accounts(only_label: str | None, include_disabled: bool) -> list[Accou
                 expected_plan_type=expected_plan_type,
                 enabled=enabled,
                 anthropic_model=anthropic_model,
+                fireworks_model=fireworks_model,
+                fireworks_base_url=fireworks_base_url,
             )
         )
 
@@ -435,10 +536,37 @@ def _extract_anthropic_keys(text: str) -> list[str]:
     return out
 
 
+def _extract_fireworks_keys(text: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if not _FIREWORKS_KEY_LINE_RE.match(s):
+            continue
+        if s in seen:
+            continue
+        out.append(s)
+        seen.add(s)
+    return out
+
+
 def _make_label_from_anthropic_key(key: str, prefix: str | None = None) -> str:
     safe_prefix = re.sub(r"[^a-z0-9]+", "_", (prefix or "claude").strip().lower()).strip("_")
     if not safe_prefix:
         safe_prefix = "claude"
+    tail = key.strip().lower()[-10:]
+    safe_tail = re.sub(r"[^a-z0-9]+", "", tail).strip("_") or "key"
+    return f"{safe_prefix}_{safe_tail}"
+
+
+def _make_label_from_fireworks_key(key: str, prefix: str | None = None) -> str:
+    safe_prefix = re.sub(
+        r"[^a-z0-9]+", "_", (prefix or "fireworks").strip().lower()
+    ).strip("_")
+    if not safe_prefix:
+        safe_prefix = "fireworks"
     tail = key.strip().lower()[-10:]
     safe_tail = re.sub(r"[^a-z0-9]+", "", tail).strip("_") or "key"
     return f"{safe_prefix}_{safe_tail}"
@@ -467,6 +595,16 @@ class AddAnthropicKeysPayload(BaseModel):
     note: str | None = None
     label_prefix: str | None = None
     anthropic_model: str | None = None
+
+
+class AddFireworksKeysPayload(BaseModel):
+    text: str | None = None
+    keys: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    note: str | None = None
+    label_prefix: str | None = None
+    fireworks_model: str | None = None
+    fireworks_base_url: str | None = None
 
 
 @app.post("/config/add_accounts")
@@ -677,6 +815,131 @@ def config_add_anthropic_keys(payload: AddAnthropicKeysPayload):
             secrets_dir = account_home / ".secrets"
             secrets_dir.mkdir(parents=True, exist_ok=True)
             key_path = secrets_dir / "anthropic_api_key.txt"
+            _write_text_atomic(key_path, key.strip() + "\n")
+
+        _write_json_atomic(config_path, cfg)
+
+        try:
+            _push_registry_from_config()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"failed to push registry: {e}") from e
+
+    return {"ok": True, "added": added, "updated": updated, "labels": sorted(set(labels))}
+
+
+@app.post("/config/add_fireworks_keys")
+def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
+    config_path = Path(CONFIG_PATH)
+    if not config_path.exists() or not config_path.is_file():
+        raise HTTPException(status_code=500, detail=f"config not found: {CONFIG_PATH}")
+
+    keys: list[str] = []
+    if payload.text:
+        keys.extend(_extract_fireworks_keys(payload.text))
+    for k in payload.keys or []:
+        if isinstance(k, str):
+            keys.extend(_extract_fireworks_keys(k))
+
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for k in keys:
+        if k in seen:
+            continue
+        uniq.append(k)
+        seen.add(k)
+
+    if not uniq:
+        raise HTTPException(status_code=400, detail="no fireworks api keys found")
+
+    label_prefix = (payload.label_prefix or "").strip() or None
+    note = (payload.note or "").strip() or None
+    model = (payload.fireworks_model or "").strip() or None
+    base_url = (payload.fireworks_base_url or "").strip() or None
+    if base_url:
+        base_url = base_url.rstrip("/")
+
+    with _config_lock:
+        with _refresh_cond:
+            if _refresh_running:
+                ok = _refresh_cond.wait_for(
+                    lambda: not _refresh_running, timeout=REFRESH_JOIN_TIMEOUT_SEC
+                )
+                if not ok:
+                    raise HTTPException(status_code=409, detail="refresh already running")
+
+        cfg = _read_json(config_path)
+        accounts = cfg.get("accounts")
+        if not isinstance(accounts, list):
+            accounts = []
+            cfg["accounts"] = accounts
+
+        existing_labels: set[str] = set()
+        existing_by_label: dict[str, dict[str, Any]] = {}
+        for a in accounts:
+            if not isinstance(a, dict):
+                continue
+            label = (a.get("label") or "").strip()
+            if not label:
+                continue
+            existing_labels.add(label)
+            existing_by_label[label] = a
+
+        added = 0
+        updated = 0
+        labels: list[str] = []
+        for key in uniq:
+            base = _make_label_from_fireworks_key(key, prefix=label_prefix)
+            if base in existing_by_label:
+                label = base
+            else:
+                label = _make_unique_label(base, existing_labels)
+                existing_labels.add(label)
+            labels.append(label)
+
+            entry = existing_by_label.get(label)
+            if entry is None:
+                entry = {
+                    "label": label,
+                    "provider": "fireworks",
+                    "enabled": bool(payload.enabled),
+                }
+                if note:
+                    entry["note"] = note
+                if model:
+                    entry["fireworks_model"] = model
+                if base_url:
+                    entry["fireworks_base_url"] = base_url
+                accounts.append(entry)
+                existing_by_label[label] = entry
+                added += 1
+            else:
+                changed = False
+                if (entry.get("provider") or "").strip().lower() != "fireworks":
+                    entry["provider"] = "fireworks"
+                    changed = True
+                if bool(entry.get("enabled", True)) != bool(payload.enabled):
+                    entry["enabled"] = bool(payload.enabled)
+                    changed = True
+                if note and (entry.get("note") or "").strip() != note:
+                    entry["note"] = note
+                    changed = True
+                if model and (entry.get("fireworks_model") or entry.get("model") or "").strip() != model:
+                    entry["fireworks_model"] = model
+                    changed = True
+                if base_url and (
+                    (entry.get("fireworks_base_url") or entry.get("base_url") or "").strip().rstrip("/")
+                    != base_url
+                ):
+                    entry["fireworks_base_url"] = base_url
+                    changed = True
+                if changed:
+                    updated += 1
+
+            account_home = Path(ACCOUNTS_DIR) / label
+            (account_home / ".codex").mkdir(parents=True, exist_ok=True)
+            secrets_dir = account_home / ".secrets"
+            secrets_dir.mkdir(parents=True, exist_ok=True)
+            key_path = secrets_dir / "fireworks_api_key.txt"
             _write_text_atomic(key_path, key.strip() + "\n")
 
         _write_json_atomic(config_path, cfg)
@@ -995,11 +1258,112 @@ def _refresh_one_anthropic(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
     return state, payload
 
 
+def _refresh_one_fireworks(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
+    account_home = Path(ACCOUNTS_DIR) / acc.label
+    account_home.mkdir(parents=True, exist_ok=True)
+    (account_home / ".codex").mkdir(parents=True, exist_ok=True)
+    secrets_dir = account_home / ".secrets"
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = _now_iso()
+
+    key_path = secrets_dir / "fireworks_api_key.txt"
+    key_text = _read_text_file(key_path) if key_path.is_file() else None
+    api_key: str | None = None
+    if key_text:
+        for line in key_text.splitlines():
+            s = line.strip()
+            if s:
+                api_key = s
+                break
+
+    model = acc.fireworks_model or None
+    base_url = (acc.fireworks_base_url or FIREWORKS_BASE_URL_DEFAULT).rstrip("/")
+
+    if not api_key or not _FIREWORKS_KEY_LINE_RE.match(api_key):
+        raw = "[auth_required] missing fireworks_api_key.txt"
+        parsed = {
+            "probe_error": True,
+            "error_type": "AuthRequired",
+            "error": f"missing API key: {key_path}",
+            "normalized": {
+                "provider": "fireworks",
+                "requiresAuth": True,
+                "expected_email": acc.expected_email,
+                "expected_email_match": None,
+                "expected_planType": acc.expected_plan_type,
+                "expected_planType_match": None,
+                "windows": {},
+                "model": model,
+                "base_url": base_url,
+            },
+        }
+        payload = _post_status_event(acc.label, raw, parsed, ts)
+        return "auth required", payload
+
+    try:
+        http_status, headers = _fireworks_request_rate_limits(api_key, base_url=base_url)
+        headers_filtered = {
+            k: v
+            for (k, v) in headers.items()
+            if k.startswith("x-ratelimit-") or k in ("retry-after", "date", "request-id")
+        }
+        normalized = _normalize_fireworks(http_status=http_status, headers=headers, expected=acc)
+        if model:
+            normalized["model"] = model
+        if base_url:
+            normalized["base_url"] = base_url
+
+        raw = json.dumps(
+            {"http_status": http_status, "model": model, "base_url": base_url, "headers": headers_filtered},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        parsed = {
+            "http_status": http_status,
+            "model": model,
+            "base_url": base_url,
+            "headers": headers_filtered,
+            "normalized": normalized,
+        }
+
+        if normalized.get("requiresAuth"):
+            state = "auth required"
+        elif normalized.get("windows"):
+            state = "ok"
+        else:
+            state = "error"
+    except Exception as e:
+        raw = f"[probe_error] {type(e).__name__}: {e}"
+        parsed = {
+            "probe_error": True,
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "normalized": {
+                "provider": "fireworks",
+                "requiresAuth": False,
+                "expected_email": acc.expected_email,
+                "expected_email_match": None,
+                "expected_planType": acc.expected_plan_type,
+                "expected_planType_match": None,
+                "windows": {},
+                "model": model,
+                "base_url": base_url,
+            },
+        }
+        state = "error"
+
+    payload = _post_status_event(acc.label, raw, parsed, ts)
+    return state, payload
+
+
 def _refresh_one(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
     if _is_codex_provider(acc.provider):
         return _refresh_one_codex(acc)
     if _is_anthropic_provider(acc.provider):
         return _refresh_one_anthropic(acc)
+    if _is_fireworks_provider(acc.provider):
+        return _refresh_one_fireworks(acc)
 
     ts = _now_iso()
     raw = f"[probe_error] unknown provider: {acc.provider}"

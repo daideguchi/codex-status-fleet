@@ -1,9 +1,10 @@
 # Codex Status Fleet
 
-複数の **Codex（ChatGPT サブスク）アカウント** と **Claude（Anthropic API キー）** のレートリミットを、ローカルの Collector に集約して一覧表示するための最小構成です。
+複数の **Codex（ChatGPT サブスク）アカウント** と **Claude（Anthropic API キー）** / **Fireworks AI（API キー）** のレートリミットを、ローカルの Collector に集約して一覧表示するための最小構成です。
 
 - Codex: `codex app-server` の JSON-RPC（`account/rateLimits/read`）
 - Claude: Anthropic API への最小リクエストで rate limit ヘッダを取得（キーはローカルに保存）
+- Fireworks: Fireworks API へのリクエストで `x-ratelimit-*` ヘッダを取得（キーはローカルに保存）
 
 注意:
 
@@ -17,13 +18,14 @@
 - `usedPercent` は「使用率」で、Codex の UI が出す「xx% left」は `100 - usedPercent` です
 - `windowDurationMins=300` が 5h、`windowDurationMins=10080` が weekly です（`parsed.normalized.windows["5h"]` / `["weekly"]`）
 - Claude（Anthropic API）は `parsed.normalized.windows["requests"]` / `["tokens"]` に `limit` / `remaining` / `resetsAtIsoUtc` を入れます
+- Fireworks は `parsed.normalized.windows["requests"]` に `limit` / `remaining` を入れます（API 仕様上 `resetsAt` が無い場合があります）
 
 ## できること
 
 - アカウントごとに認証情報 (`~/.codex`) を分離して保持
 - エージェントが `codex app-server` から `account/rateLimits/read` を取得
 - 取得結果を Collector に POST → SQLite に保存
-- Anthropic（Claude API）も同じ一覧で確認（`anthropic-ratelimit-*` ヘッダ）
+- Anthropic（Claude API）/ Fireworks も同じ一覧で確認（`anthropic-ratelimit-*` / `x-ratelimit-*` ヘッダ）
 - アカウントレジストリ（`accounts.json` → Collector に一括登録）で、未取得でも一覧に表示
 - 最新状態の取得 API
   - `GET /healthz`
@@ -37,6 +39,7 @@
 - macOS + Docker Desktop（または Linux）
 - ホスト側に `codex` が入っていること（ログイン用）
 - Claude を使う場合: Anthropic API キー（`sk-ant-...`）
+- Fireworks を使う場合: Fireworks API キー（1行1キー）
 
 ## セットアップ（ホストでログイン → コンテナで監視）
 
@@ -143,6 +146,9 @@ curl -s http://localhost:8080/latest | python3 -m json.tool
 - `http://localhost:8080/` → **Add Claude keys**  
   - `sk-ant-...` を貼り付けると `accounts.json` に `provider: "anthropic"` を追加し、キーを `accounts/<label>/.secrets/anthropic_api_key.txt` に保存します（ログイン不要）
   - 取得時は Anthropic API に最小リクエスト（`max_tokens=1`）を送ってヘッダを読むため、少量ですがリクエスト/トークンを消費します
+- `http://localhost:8080/` → **Add Fireworks keys**
+  - API キーを貼り付けると `accounts.json` に `provider: "fireworks"` を追加し、キーを `accounts/<label>/.secrets/fireworks_api_key.txt` に保存します（ログイン不要）
+  - 取得時は Fireworks API にリクエストを投げてヘッダを読むため、リクエスト枠は消費します（通常トークンは消費しません）
 
 （CLI で追加したい場合）
 
@@ -169,6 +175,7 @@ python3 scripts/add_accounts.py --config accounts.json --in emails.txt --plan pl
 - ログイン済みか確認: `./scripts/probe_account.sh acc1`
 - ログイン済み一覧: `python3 scripts/login_status.py --config accounts.json`
 - 未ログインだけ（label一覧）: `python3 scripts/login_status.py --config accounts.json --need-login`
+- 未認証/未キーだけ（label一覧）: `python3 scripts/login_status.py --config accounts.json --need-auth`
 - auth.json をバックアップから復元: `python3 scripts/restore_auth.py --config accounts.json`
 - 誤ったディレクトリにログインしてしまった場合の救済（`accounts/acc_<email>/...` → `accounts/<label>/...`）: `python3 scripts/claim_misnamed_auth.py --config accounts.json`
 - メール一覧を追加: `python3 scripts/add_accounts.py --config accounts.json --in emails.txt --plan plus`

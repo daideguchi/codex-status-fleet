@@ -81,14 +81,15 @@ UI_HTML = """<!doctype html>
     <div class="meta">
       JSON: <a href="/latest">/latest</a> / <a href="/registry">/registry</a> / <a href="/healthz">/healthz</a>
     </div>
-    <div class="toolbar">
-      <button id="refresh">Update now</button>
-      <button id="add">Add accounts</button>
-      <button id="addKeys">Add Claude keys</button>
-      <label class="muted">Filter <input id="filter" placeholder="email / note / provider" /></label>
-      <span id="summary" class="muted"></span>
-      <span id="status" class="muted"></span>
-    </div>
+	    <div class="toolbar">
+	      <button id="refresh">Update now</button>
+	      <button id="add">Add accounts</button>
+	      <button id="addKeys">Add Claude keys</button>
+	      <button id="addFw">Add Fireworks keys</button>
+	      <label class="muted">Filter <input id="filter" placeholder="email / note / provider" /></label>
+	      <span id="summary" class="muted"></span>
+	      <span id="status" class="muted"></span>
+	    </div>
 	    <table>
 	      <thead>
 	        <tr>
@@ -155,21 +156,49 @@ UI_HTML = """<!doctype html>
         <div style="height: 8px"></div>
         <pre id="keysPreview" class="mono small" style="white-space: pre-wrap; margin: 0;"></pre>
         <div style="height: 10px"></div>
-        <div class="row" style="justify-content: flex-end;">
-          <button id="keysCancel">Cancel</button>
-          <button id="keysSubmit">Add</button>
-        </div>
-      </div>
-    </div>
-    <script>
-      const $ = (id) => document.getElementById(id);
+	        <div class="row" style="justify-content: flex-end;">
+	          <button id="keysCancel">Cancel</button>
+	          <button id="keysSubmit">Add</button>
+	        </div>
+	      </div>
+	    </div>
+	    <div id="fwModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
+	      <div class="card">
+	        <div class="row" style="justify-content: space-between;">
+	          <h2>Add Fireworks keys</h2>
+	          <button id="fwClose">Close</button>
+	        </div>
+	        <div class="small">Paste Fireworks API keys (one per line). Keys are stored under accounts/&lt;label&gt;/.secrets/fireworks_api_key.txt.</div>
+	        <div style="height: 8px"></div>
+	        <textarea id="fwText" placeholder="YOUR_FIREWORKS_API_KEY"></textarea>
+	        <div style="height: 8px"></div>
+	        <div class="row">
+	          <label class="muted">Label prefix <input id="fwPrefix" value="fireworks" /></label>
+	          <label class="muted">Model <input id="fwModel" placeholder="accounts/fireworks/models/llama-v3p1-8b-instruct" /></label>
+	          <label class="muted">Base URL <input id="fwBaseUrl" placeholder="https://api.fireworks.ai/inference/v1" /></label>
+	          <label class="muted">Note <input id="fwNote" placeholder="team /用途" /></label>
+	          <label class="muted"><input id="fwEnabled" type="checkbox" checked /> enabled</label>
+	          <span id="fwFound" class="small"></span>
+	        </div>
+	        <div style="height: 8px"></div>
+	        <pre id="fwPreview" class="mono small" style="white-space: pre-wrap; margin: 0;"></pre>
+	        <div style="height: 10px"></div>
+	        <div class="row" style="justify-content: flex-end;">
+	          <button id="fwCancel">Cancel</button>
+	          <button id="fwSubmit">Add</button>
+	        </div>
+	      </div>
+	    </div>
+	    <script>
+	      const $ = (id) => document.getElementById(id);
       const rowsEl = $("rows");
       const statusEl = $("status");
-      const summaryEl = $("summary");
-      const refreshBtn = $("refresh");
-      const addBtn = $("add");
-      const addKeysBtn = $("addKeys");
-      const filterEl = $("filter");
+	      const summaryEl = $("summary");
+	      const refreshBtn = $("refresh");
+	      const addBtn = $("add");
+	      const addKeysBtn = $("addKeys");
+	      const addFwBtn = $("addFw");
+	      const filterEl = $("filter");
       const addModal = $("addModal");
       const addClose = $("addClose");
       const addCancel = $("addCancel");
@@ -179,7 +208,7 @@ UI_HTML = """<!doctype html>
       const addEnabled = $("addEnabled");
       const addFound = $("addFound");
       const addPreview = $("addPreview");
-      const keysModal = $("keysModal");
+	      const keysModal = $("keysModal");
       const keysClose = $("keysClose");
       const keysCancel = $("keysCancel");
       const keysSubmit = $("keysSubmit");
@@ -187,9 +216,21 @@ UI_HTML = """<!doctype html>
       const keysPrefix = $("keysPrefix");
       const keysModel = $("keysModel");
       const keysNote = $("keysNote");
-      const keysEnabled = $("keysEnabled");
-	      const keysFound = $("keysFound");
-	      const keysPreview = $("keysPreview");
+	      const keysEnabled = $("keysEnabled");
+		      const keysFound = $("keysFound");
+		      const keysPreview = $("keysPreview");
+		      const fwModal = $("fwModal");
+		      const fwClose = $("fwClose");
+		      const fwCancel = $("fwCancel");
+		      const fwSubmit = $("fwSubmit");
+		      const fwText = $("fwText");
+		      const fwPrefix = $("fwPrefix");
+		      const fwModel = $("fwModel");
+		      const fwBaseUrl = $("fwBaseUrl");
+		      const fwNote = $("fwNote");
+		      const fwEnabled = $("fwEnabled");
+		      const fwFound = $("fwFound");
+		      const fwPreview = $("fwPreview");
 	      let cachedItems = [];
 	      let lastUpdateText = "";
 	      let refreshing = false;
@@ -489,6 +530,18 @@ UI_HTML = """<!doctype html>
         }
       }
 
+      function setFwModalOpen(open) {
+        if (open) {
+          fwModal.classList.add("open");
+          fwModal.setAttribute("aria-hidden", "false");
+          renderFwPreview();
+          try { fwText.focus(); } catch {}
+        } else {
+          fwModal.classList.remove("open");
+          fwModal.setAttribute("aria-hidden", "true");
+        }
+      }
+
       function extractEmails(text) {
         const re = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/g;
         const m = (text || "").match(re) || [];
@@ -505,6 +558,21 @@ UI_HTML = """<!doctype html>
 
       function extractAnthropicKeys(text) {
         const re = /sk-ant-[A-Za-z0-9_-]+/g;
+        const m = (text || "").match(re) || [];
+        const out = [];
+        const seen = new Set();
+        for (const raw of m) {
+          const k = String(raw).trim();
+          if (!k || seen.has(k)) continue;
+          seen.add(k);
+          out.push(k);
+        }
+        return out;
+      }
+
+      function extractFireworksKeys(text) {
+        // Fireworks key format varies; accept long token-like strings (no whitespace).
+        const re = /[A-Za-z0-9_-]{20,}/g;
         const m = (text || "").match(re) || [];
         const out = [];
         const seen = new Set();
@@ -534,6 +602,12 @@ UI_HTML = """<!doctype html>
         const keys = extractAnthropicKeys(keysText.value || "");
         keysFound.textContent = keys.length ? `Found ${keys.length}` : "Found 0";
         keysPreview.textContent = keys.slice(0, 200).map(maskKey).join("\\n");
+      }
+
+      function renderFwPreview() {
+        const keys = extractFireworksKeys(fwText.value || "");
+        fwFound.textContent = keys.length ? `Found ${keys.length}` : "Found 0";
+        fwPreview.textContent = keys.slice(0, 200).map(maskKey).join("\\n");
       }
 
       function classify(item) {
@@ -573,8 +647,8 @@ UI_HTML = """<!doctype html>
         const provider = providerRaw || "-";
         const providerLc = providerRaw.toLowerCase();
 
-        const isAnthropic = providerLc.startsWith("anthropic") || providerLc.startsWith("claude");
-        const planOrModel = isAnthropic ? safe(model) : safe(plan);
+        const isApiProvider = providerLc.startsWith("anthropic") || providerLc.startsWith("claude") || providerLc.startsWith("fireworks");
+        const planOrModel = isApiProvider ? safe(model) : safe(plan);
 
         let state = "";
         const cls = classify(item);
@@ -586,7 +660,7 @@ UI_HTML = """<!doctype html>
         else state = pill("ok", true);
 
         const expectedMatch = norm.expected_email_match;
-        let accountLineHtml = esc(safe(email, isAnthropic ? "(api key)" : "(unknown)"));
+        let accountLineHtml = esc(safe(email, isApiProvider ? "(api key)" : "(unknown)"));
         if (!norm.account_email && (norm.expected_email || regEmail)) {
           accountLineHtml += " " + pill("expected", true);
         } else if (typeof expectedMatch === "boolean") {
@@ -862,6 +936,57 @@ UI_HTML = """<!doctype html>
         }
       }
 
+      async function addFireworksKeys() {
+        const keys = extractFireworksKeys(fwText.value || "");
+        if (!keys.length) {
+          fwFound.textContent = "Found 0 (paste keys first)";
+          return;
+        }
+
+        fwSubmit.disabled = true;
+        fwCancel.disabled = true;
+        fwClose.disabled = true;
+        statusEl.textContent = "Adding Fireworks keys...";
+        try {
+          const payload = {
+            text: fwText.value,
+            enabled: !!fwEnabled.checked,
+            label_prefix: (fwPrefix.value || "").trim() || null,
+            note: (fwNote.value || "").trim() || null,
+            fireworks_model: (fwModel.value || "").trim() || null,
+            fireworks_base_url: (fwBaseUrl.value || "").trim() || null,
+          };
+          const res = await fetch("/fireworks/add_keys", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          let body = null;
+          try { body = await res.json(); } catch {}
+          if (!res.ok) {
+            const msg = (body && (body.detail || body.error)) ? (body.detail || body.error) : `HTTP ${res.status}`;
+            throw new Error(msg);
+          }
+
+          setFwModalOpen(false);
+          fwText.value = "";
+          fwNote.value = "";
+          renderFwPreview();
+
+          await loadLatest();
+          const added = body && typeof body.added === "number" ? body.added : 0;
+          const updated = body && typeof body.updated === "number" ? body.updated : 0;
+          lastUpdateText = `Fireworks keys updated — added:${added} updated:${updated}`;
+          renderFromCache();
+        } catch (e) {
+          statusEl.textContent = `Add error: ${e}`;
+        } finally {
+          fwSubmit.disabled = false;
+          fwCancel.disabled = false;
+          fwClose.disabled = false;
+        }
+      }
+
       async function updateNow(label=null) {
         if (refreshing) return;
         refreshing = true;
@@ -925,8 +1050,9 @@ UI_HTML = """<!doctype html>
 	      });
 
 	      refreshBtn.addEventListener("click", updateNow);
-      addBtn.addEventListener("click", () => { setKeysModalOpen(false); setModalOpen(true); });
-      addKeysBtn.addEventListener("click", () => { setModalOpen(false); setKeysModalOpen(true); });
+      addBtn.addEventListener("click", () => { setKeysModalOpen(false); setFwModalOpen(false); setModalOpen(true); });
+      addKeysBtn.addEventListener("click", () => { setModalOpen(false); setFwModalOpen(false); setKeysModalOpen(true); });
+      addFwBtn.addEventListener("click", () => { setModalOpen(false); setKeysModalOpen(false); setFwModalOpen(true); });
       addClose.addEventListener("click", () => setModalOpen(false));
       addCancel.addEventListener("click", () => setModalOpen(false));
       addSubmit.addEventListener("click", addAccounts);
@@ -941,10 +1067,18 @@ UI_HTML = """<!doctype html>
       keysModal.addEventListener("click", (ev) => {
         if (ev.target === keysModal) setKeysModalOpen(false);
       });
+      fwClose.addEventListener("click", () => setFwModalOpen(false));
+      fwCancel.addEventListener("click", () => setFwModalOpen(false));
+      fwSubmit.addEventListener("click", addFireworksKeys);
+      fwText.addEventListener("input", renderFwPreview);
+      fwModal.addEventListener("click", (ev) => {
+        if (ev.target === fwModal) setFwModalOpen(false);
+      });
       document.addEventListener("keydown", (ev) => {
         if (ev.key !== "Escape") return;
         if (addModal.classList.contains("open")) setModalOpen(false);
         if (keysModal.classList.contains("open")) setKeysModalOpen(false);
+        if (fwModal.classList.contains("open")) setFwModalOpen(false);
       });
       filterEl.addEventListener("input", renderFromCache);
       rowsEl.addEventListener("click", (ev) => {
@@ -1052,6 +1186,16 @@ class AddAnthropicKeysPayload(BaseModel):
     anthropic_model: str | None = None
 
 
+class AddFireworksKeysPayload(BaseModel):
+    text: str | None = None
+    keys: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    note: str | None = None
+    label_prefix: str | None = None
+    fireworks_model: str | None = None
+    fireworks_base_url: str | None = None
+
+
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
@@ -1128,6 +1272,34 @@ def anthropic_add_keys(payload: AddAnthropicKeysPayload):
         raise HTTPException(status_code=501, detail="refresher is disabled")
 
     url = f"{REFRESHER_BASE_URL}/config/add_anthropic_keys"
+    data = json.dumps(payload.model_dump(), ensure_ascii=False).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {"ok": True}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except Exception:
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) else body
+        raise HTTPException(status_code=e.code, detail=detail)
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.post("/fireworks/add_keys")
+def fireworks_add_keys(payload: AddFireworksKeysPayload):
+    if not REFRESHER_BASE_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    url = f"{REFRESHER_BASE_URL}/config/add_fireworks_keys"
     data = json.dumps(payload.model_dump(), ensure_ascii=False).encode("utf-8")
     try:
         req = urllib.request.Request(

@@ -73,6 +73,11 @@ def main() -> int:
         action="store_true",
         help="Print labels that need login (one per line) and exit.",
     )
+    parser.add_argument(
+        "--need-auth",
+        action="store_true",
+        help="Print enabled labels missing auth/keys (one per line) and exit.",
+    )
     args = parser.parse_args()
 
     root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -121,6 +126,14 @@ def main() -> int:
                     "api_key_mtime_utc": _fmt_mtime(key_path) if os.path.isfile(key_path) else None,
                 }
             )
+        elif provider in ("fireworks", "fireworks_ai", "fireworks_api"):
+            key_path = os.path.join(accounts_root, label, ".secrets", "fireworks_api_key.txt")
+            row.update(
+                {
+                    "has_api_key": os.path.isfile(key_path),
+                    "api_key_mtime_utc": _fmt_mtime(key_path) if os.path.isfile(key_path) else None,
+                }
+            )
         else:
             row["note"] = "unknown provider"
 
@@ -130,6 +143,22 @@ def main() -> int:
         for it in rows:
             if it.get("provider") == "codex" and it.get("enabled") and not it.get("logged_in"):
                 print(it.get("label") or "")
+        return 0
+
+    if args.need_auth:
+        for it in rows:
+            if not it.get("enabled"):
+                continue
+            provider = (it.get("provider") or "").strip().lower()
+            if provider in ("codex", "openai_codex", "openai"):
+                if not it.get("logged_in"):
+                    print(it.get("label") or "")
+            elif provider in ("anthropic", "claude", "claude_api"):
+                if not it.get("has_api_key"):
+                    print(it.get("label") or "")
+            elif provider in ("fireworks", "fireworks_ai", "fireworks_api"):
+                if not it.get("has_api_key"):
+                    print(it.get("label") or "")
         return 0
 
     print(json.dumps({"items": rows}, ensure_ascii=False, indent=2))
