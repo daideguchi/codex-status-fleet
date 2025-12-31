@@ -53,6 +53,18 @@ UI_HTML = """<!doctype html>
       .card { background: Canvas; border: 1px solid #8884; border-radius: 12px; padding: 12px; width: min(720px, 100%); }
       .card h2 { font-size: 14px; margin: 0 0 8px; }
       .small { font-size: 12px; opacity: 0.85; }
+      .limits { display: flex; flex-direction: column; gap: 10px; min-width: 220px; }
+      .limit-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+      .bar { height: 10px; border-radius: 999px; border: 1px solid #8884; background: #8882; overflow: hidden; }
+      .fill { height: 100%; width: 0%; border-radius: 999px; background: #8886; }
+      .fill.ok { background: #0a7; }
+      .fill.warn { background: #d9a200; }
+      .fill.bad { background: #d55; }
+      .pct { font-weight: 700; }
+      .pct.ok { color: #0a7; }
+      .pct.warn { color: #d9a200; }
+      .pct.bad { color: #d55; }
+      .limit-meta { display: flex; gap: 10px; flex-wrap: wrap; }
     </style>
   </head>
   <body>
@@ -177,6 +189,20 @@ UI_HTML = """<!doctype html>
         if (p === null || p === undefined) return "-";
         if (typeof p !== "number") return "-";
         return `${p}%`;
+      }
+      function clampPct(p) {
+        if (p === null || p === undefined) return null;
+        const n = Number(p);
+        if (!Number.isFinite(n)) return null;
+        return Math.max(0, Math.min(100, Math.round(n)));
+      }
+      function pctClass(leftPercent) {
+        if (leftPercent === null || leftPercent === undefined) return "";
+        const p = Number(leftPercent);
+        if (!Number.isFinite(p)) return "";
+        if (p <= 20) return "bad";
+        if (p <= 60) return "warn";
+        return "ok";
       }
       function fmtTs(iso) {
         if (!iso) return "-";
@@ -334,31 +360,52 @@ UI_HTML = """<!doctype html>
 
         const providerHtml = providerRaw ? `<span class="pill mono">${esc(providerRaw)}</span>` : "-";
 
-        const limitLines = [];
-        const addLimit = (name, w) => {
+        const limitBlocks = [];
+        const addLimitBlock = (name, w) => {
           if (!w || typeof w !== "object") return;
-          const left = fmtPct(w.leftPercent);
-          const reset = fmtTs(w.resetsAtIsoUtc);
-          let counts = "";
-          if (w.remaining !== null && w.remaining !== undefined && w.limit !== null && w.limit !== undefined) {
-            counts = ` ${w.remaining}/${w.limit}`;
+
+          let leftPct = clampPct(w.leftPercent);
+          if (leftPct === null) {
+            const used = clampPct(w.usedPercent);
+            if (used !== null) leftPct = clampPct(100 - used);
           }
-          const parts = [name + ":", left];
-          if (counts) parts.push(counts.trim());
-          if (reset !== "-" && reset !== "") parts.push("resets", reset);
-          limitLines.push(parts.join(" "));
+          const cls = pctClass(leftPct);
+          const leftText = fmtPct(leftPct);
+          const reset = fmtTs(w.resetsAtIsoUtc);
+
+          const metaParts = [];
+          if (w.remaining !== null && w.remaining !== undefined && w.limit !== null && w.limit !== undefined) {
+            metaParts.push(`${w.remaining}/${w.limit}`);
+          }
+          if (reset !== "-" && reset !== "") metaParts.push(`resets ${reset}`);
+          const metaHtml = metaParts.length
+            ? `<div class="limit-meta small muted">${metaParts.map(esc).join(" · ")}</div>`
+            : "";
+
+          const width = leftPct === null ? 0 : leftPct;
+          limitBlocks.push(`
+            <div>
+              <div class="limit-top">
+                <span class="mono">${esc(name)}</span>
+                <span class="mono pct ${cls}">${esc(leftText)}</span>
+              </div>
+              <div class="bar" title="${esc(name)} ${esc(leftText)}">
+                <div class="fill ${cls}" style="width: ${width}%;"></div>
+              </div>
+              ${metaHtml}
+            </div>
+          `);
         };
 
-        addLimit("5h", windows["5h"]);
-        addLimit("weekly", windows["weekly"]);
-        addLimit("requests", windows["requests"]);
-        addLimit("tokens", windows["tokens"]);
-        for (const k of Object.keys(windows || {})) {
+        addLimitBlock("5h", windows["5h"]);
+        addLimitBlock("weekly", windows["weekly"]);
+        addLimitBlock("requests", windows["requests"]);
+        addLimitBlock("tokens", windows["tokens"]);
+        for (const k of Object.keys(windows || {}).sort()) {
           if (k === "5h" || k === "weekly" || k === "requests" || k === "tokens") continue;
-          addLimit(k, windows[k]);
+          addLimitBlock(k, windows[k]);
         }
-        const limitsText = limitLines.length ? limitLines.join("\\n") : "-";
-        const limitsHtml = `<pre class="mono small" style="margin:0; white-space: pre-wrap;">${esc(limitsText)}</pre>`;
+        const limitsHtml = limitBlocks.length ? `<div class="limits">${limitBlocks.join("")}</div>` : "-";
 
         return `
           <tr>
@@ -703,7 +750,7 @@ def healthz():
 
 @app.get("/", response_class=HTMLResponse)
 def ui():
-    return HTMLResponse(UI_HTML)
+    return HTMLResponse(UI_HTML, headers={"Cache-Control": "no-store, max-age=0"})
 
 
 @app.post("/refresh")
