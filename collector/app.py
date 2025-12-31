@@ -30,16 +30,16 @@ UI_HTML = """<!doctype html>
     <title>Codex Status Fleet</title>
     <style>
       :root { color-scheme: light dark; }
-      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; margin: 12px; }
-      h1 { font-size: 16px; margin: 0 0 8px; }
-      .meta { font-size: 12px; opacity: 0.8; margin-bottom: 12px; }
-      .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-      button { padding: 6px 10px; border-radius: 8px; border: 1px solid #8884; background: #8882; cursor: pointer; }
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; margin: 10px; }
+      h1 { font-size: 16px; margin: 0 0 6px; }
+      .meta { font-size: 12px; opacity: 0.8; margin-bottom: 8px; }
+      .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+      button { padding: 5px 9px; border-radius: 8px; border: 1px solid #8884; background: #8882; cursor: pointer; }
       button:hover { background: #8883; }
-      input, textarea, select { padding: 6px 10px; border-radius: 8px; border: 1px solid #8884; background: #8881; }
+      input, textarea, select { padding: 5px 9px; border-radius: 8px; border: 1px solid #8884; background: #8881; }
       textarea { width: 100%; min-height: 140px; resize: vertical; }
-      table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.1; }
-      th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #8883; vertical-align: middle; white-space: nowrap; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; line-height: 1.0; }
+      th, td { text-align: left; padding: 2px 6px; border-bottom: 1px solid #8883; vertical-align: middle; white-space: nowrap; }
       th { position: sticky; top: 0; background: Canvas; z-index: 1; }
       th.sortable { cursor: pointer; user-select: none; }
       th.sortable:hover { background: #8881; }
@@ -59,7 +59,7 @@ UI_HTML = """<!doctype html>
       .card h2 { font-size: 14px; margin: 0 0 8px; }
       .small { font-size: 12px; opacity: 0.85; }
       .limits { display: inline-flex; flex-wrap: nowrap; gap: 8px; align-items: center; white-space: nowrap; }
-      .limit { --pct: 0; --fill: #8886; width: 120px; display: inline-flex; justify-content: space-between; gap: 10px; align-items: center; padding: 1px 8px; border-radius: 999px; border: 1px solid #8883; background: #8881; position: relative; overflow: hidden; white-space: nowrap; }
+      .limit { --pct: 0; --fill: #8886; width: 112px; display: inline-flex; justify-content: space-between; gap: 8px; align-items: center; padding: 0 7px; border-radius: 999px; border: 1px solid #8883; background: #8881; position: relative; overflow: hidden; white-space: nowrap; }
       .limit.more { width: auto; justify-content: flex-start; gap: 0; }
       .limit::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, var(--fill) calc(var(--pct) * 1%), transparent 0); opacity: 0.45; pointer-events: none; }
       .limit > * { position: relative; }
@@ -71,7 +71,11 @@ UI_HTML = """<!doctype html>
       .pct.ok { color: #0a7; }
       .pct.warn { color: #d9a200; }
       .pct.bad { color: #d55; }
-      .tablebtn { padding: 2px 8px; border-radius: 6px; font-size: 12px; }
+      .credit { display: inline-block; padding: 0 7px; border-radius: 999px; border: 1px solid #8883; background: #8881; }
+      .credit.ok { color: #0a7; border-color: #0a74; }
+      .credit.warn { color: #d9a200; border-color: #d9a244; }
+      .credit.bad { color: #d55; border-color: #d554; }
+      .tablebtn { padding: 1px 7px; border-radius: 6px; font-size: 12px; }
       tr.row-warn td { background: rgba(217, 162, 0, 0.08); }
       tr.row-bad td { background: rgba(213, 85, 85, 0.10); }
     </style>
@@ -97,8 +101,7 @@ UI_HTML = """<!doctype html>
 	          <th class="sortable" data-sort="account">Account / Note</th>
 	          <th class="sortable" data-sort="plan">Plan / Model</th>
 	          <th class="sortable" data-sort="limits">Limits</th>
-	          <th class="sortable nowrap" data-sort="reset5h">5h reset</th>
-	          <th class="sortable nowrap" data-sort="resetWeekly">Weekly reset</th>
+	          <th class="sortable" data-sort="credits">Credits</th>
 	          <th class="sortable" data-sort="state">State</th>
 	          <th>Action</th>
 	        </tr>
@@ -242,8 +245,7 @@ UI_HTML = """<!doctype html>
 	        account: "asc",
 	        plan: "asc",
 	        limits: "desc",
-	        reset5h: "asc",
-	        resetWeekly: "asc",
+	        credits: "desc",
 	        state: "desc",
 	      };
 
@@ -254,7 +256,7 @@ UI_HTML = """<!doctype html>
 	          const obj = JSON.parse(raw);
 	          const k = obj && obj.key ? String(obj.key) : null;
 	          const d = obj && obj.dir ? String(obj.dir) : null;
-	          if (k) sortKey = k;
+	          if (k && Object.prototype.hasOwnProperty.call(SORT_DEFAULT_DIR, k)) sortKey = k;
 	          if (d === "asc" || d === "desc") sortDir = d;
 	        } catch {}
 	      }
@@ -422,6 +424,20 @@ UI_HTML = """<!doctype html>
 	        return isApiProvider ? model : plan;
 	      }
 
+	      function _creditAmount(item) {
+	        const provider = _providerKey(item);
+	        if (!provider.startsWith("fireworks")) return null;
+	        const n = _norm(item);
+	        const c = (n && n.credits) ? n.credits : null;
+	        if (!c || typeof c !== "object") return null;
+	        if (typeof c.amount === "number" && Number.isFinite(c.amount)) return c.amount;
+	        const raw = c.amount_raw;
+	        if (!raw) return null;
+	        const v = Number(raw);
+	        if (!Number.isFinite(v)) return null;
+	        return v;
+	      }
+
 	      function _labelKey(item) {
 	        return _lc(item && item.account_label ? item.account_label : "");
 	      }
@@ -477,12 +493,8 @@ UI_HTML = """<!doctype html>
 	          const c2 = _cmpNum(a5, b5, dir);
 	          return c2 || _cmpText(_accountKey(a), _accountKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
 	        }
-	        if (key === "reset5h") {
-	          const c = _cmpNum(_windowResetEpoch(a, "5h"), _windowResetEpoch(b, "5h"), dir);
-	          return c || _cmpText(_accountKey(a), _accountKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
-	        }
-	        if (key === "resetWeekly") {
-	          const c = _cmpNum(_windowResetEpoch(a, "weekly"), _windowResetEpoch(b, "weekly"), dir);
+	        if (key === "credits") {
+	          const c = _cmpNum(_creditAmount(a), _creditAmount(b), dir);
 	          return c || _cmpText(_accountKey(a), _accountKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
 	        }
 	        if (key === "state") {
@@ -676,6 +688,31 @@ UI_HTML = """<!doctype html>
 
         const providerHtml = providerRaw ? `<span class="pill mono">${esc(providerRaw)}</span>` : "-";
 
+        const creditClass = (amount) => {
+          const n = (typeof amount === "number" && Number.isFinite(amount)) ? amount : null;
+          if (n === null) return "";
+          if (n <= 1) return "bad";
+          if (n <= 5) return "warn";
+          return "ok";
+        };
+        const credits = norm.credits || {};
+        const creditAmt =
+          (typeof credits.amount === "number" && Number.isFinite(credits.amount))
+            ? credits.amount
+            : (credits.amount_raw ? Number(credits.amount_raw) : null);
+        const creditCur = (credits.currency || "USD").toUpperCase();
+        let creditsHtml = "-";
+        if (providerLc.startsWith("fireworks")) {
+          if (typeof creditAmt === "number" && Number.isFinite(creditAmt)) {
+            const cls = creditClass(creditAmt);
+            const txt = `${creditCur} ${creditAmt.toFixed(2)}`;
+            const title = `balance ${txt}` + (credits.source ? ` (via ${credits.source})` : "");
+            creditsHtml = `<span class="credit ${cls} mono" title="${esc(title)}">${esc(txt)}</span>`;
+          } else if (credits && credits.error) {
+            creditsHtml = `<span class="mono muted" title="balance error">${esc(String(credits.error))}</span>`;
+          }
+        }
+
         const leftOf = (w) => {
           if (!w || typeof w !== "object") return null;
           let leftPct = clampPct(w.leftPercent);
@@ -684,14 +721,6 @@ UI_HTML = """<!doctype html>
             if (used !== null) leftPct = clampPct(100 - used);
           }
           return leftPct;
-        };
-
-        const resetCell = (w) => {
-          if (!w || typeof w !== "object") return "-";
-          const full = fmtTs(w.resetsAtIsoUtc);
-          if (!w.resetsAtIsoUtc || full === "-") return "-";
-          const short = fmtResetShort(w.resetsAtIsoUtc) || full;
-          return `<span class="mono nowrap" title="resets ${esc(full)}">${esc(short)}</span>`;
         };
 
         const limitBlocks = [];
@@ -750,8 +779,6 @@ UI_HTML = """<!doctype html>
           limitBlocks.push(`<span class="limit more" title="${esc("more: " + extraKeys.join(", "))}"><span class="mono name">+${extraKeys.length}</span></span>`);
         }
         const limitsHtml = limitBlocks.length ? `<span class="limits">${limitBlocks.join("")}</span>` : "-";
-        const reset5hHtml = resetCell(windows["5h"]);
-        const resetWeeklyHtml = resetCell(windows["weekly"]);
 
         const s = classify(item);
         const left5h = leftOf(windows["5h"]);
@@ -763,7 +790,8 @@ UI_HTML = """<!doctype html>
         if (s === "auth_required" || s === "probe_error" || s === "no_parsed") rowCls = "row-bad";
         else if (s === "pending") rowCls = "row-warn";
         else {
-          const c = pctClass(worst);
+          let c = pctClass(worst);
+          if (!c && providerLc.startsWith("fireworks")) c = creditClass(creditAmt);
           if (c === "bad") rowCls = "row-bad";
           else if (c === "warn") rowCls = "row-warn";
         }
@@ -774,8 +802,7 @@ UI_HTML = """<!doctype html>
             <td>${accountHtml}</td>
             <td class="mono">${esc(planOrModel)}</td>
             <td>${limitsHtml}</td>
-            <td class="mono nowrap">${reset5hHtml}</td>
-            <td class="mono nowrap">${resetWeeklyHtml}</td>
+            <td class="mono nowrap">${creditsHtml}</td>
             <td>${state}</td>
             <td><button class="tablebtn" title="Update" aria-label="Update" data-label="${encodeURIComponent(safe(item.account_label))}">↻</button></td>
           </tr>

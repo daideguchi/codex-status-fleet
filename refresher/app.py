@@ -29,6 +29,7 @@ COLLECTOR_URL = os.getenv("COLLECTOR_URL", "http://collector:8080/ingest")
 CODEX_BIN = os.getenv("CODEX_BIN", "codex")
 RPC_TIMEOUT_SEC = float(os.getenv("RPC_TIMEOUT_SEC", "10.0"))
 HTTP_TIMEOUT_SEC = float(os.getenv("HTTP_TIMEOUT_SEC", "20.0"))
+FIREWORKS_BALANCE_TTL_SEC = float(os.getenv("FIREWORKS_BALANCE_TTL_SEC", "300"))
 
 ANTHROPIC_API_URL = os.getenv("ANTHROPIC_API_URL", "https://api.anthropic.com/v1/messages")
 ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01")
@@ -42,6 +43,7 @@ _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 _EMAIL_FIND_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _ANTHROPIC_KEY_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
 _FIREWORKS_KEY_LINE_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
+_FIRECTL_BALANCE_RE = re.compile(r"(?im)^Balance:\s*([A-Z]{3})\s*([0-9]+(?:\.[0-9]+)?)\b")
 
 app = FastAPI(title="Codex Status Refresher")
 
@@ -49,6 +51,8 @@ _refresh_cond = threading.Condition()
 _refresh_running = False
 _refresh_last_result: dict[str, Any] | None = None
 _config_lock = threading.Lock()
+_fireworks_balance_cache_lock = threading.Lock()
+_fireworks_balance_cache: dict[str, dict[str, Any]] = {}
 
 REFRESH_JOIN_TIMEOUT_SEC = float(os.getenv("REFRESH_JOIN_TIMEOUT_SEC", "300"))
 
@@ -381,6 +385,65 @@ def _fireworks_request_rate_limits(api_key: str, base_url: str | None) -> tuple[
     except urllib.error.HTTPError as e:
         _ = e.read()
         return int(getattr(e, "code", 0) or 0), _headers_to_dict(e.headers)
+
+
+def _fireworks_get_balance(api_key: str) -> dict[str, Any] | None:
+    try:
+        proc = subprocess.run(
+            ["firectl", "get", "account", "--api-key", api_key, "-o", "json"],
+            capture_output=True,
+            text=True,
+            timeout=HTTP_TIMEOUT_SEC,
+        )
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
+        return {"error": "timeout"}
+
+    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    matches = list(_FIRECTL_BALANCE_RE.finditer(combined))
+    if not matches:
+        if proc.returncode != 0:
+            return {"error": "nonzero_exit"}
+        return None
+
+    m = matches[-1]
+    currency = (m.group(1) or "").strip().upper() or None
+    amount_raw = (m.group(2) or "").strip() or None
+    amount: float | None = None
+    if amount_raw:
+        try:
+            amount = float(amount_raw)
+        except Exception:
+            amount = None
+
+    return {
+        "currency": currency,
+        "amount": amount,
+        "amount_raw": amount_raw,
+        "source": "firectl",
+    }
+
+
+def _fireworks_get_balance_cached(label: str, api_key: str) -> dict[str, Any] | None:
+    ttl = FIREWORKS_BALANCE_TTL_SEC
+    if ttl <= 0:
+        return _fireworks_get_balance(api_key)
+
+    now = time.time()
+    with _fireworks_balance_cache_lock:
+        cached = _fireworks_balance_cache.get(label)
+        if isinstance(cached, dict):
+            ts = cached.get("ts")
+            value = cached.get("value")
+            if isinstance(ts, (int, float)) and isinstance(value, dict) and (now - float(ts)) < ttl:
+                return value
+
+    value = _fireworks_get_balance(api_key)
+    if value and isinstance(value, dict) and not value.get("error"):
+        with _fireworks_balance_cache_lock:
+            _fireworks_balance_cache[label] = {"ts": now, "value": value}
+    return value
 
 
 def _normalize_fireworks(
@@ -1355,7 +1418,7 @@ def _refresh_one_anthropic(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
 
         if normalized.get("requiresAuth"):
             state = "auth required"
-        elif normalized.get("windows"):
+        elif normalized.get("windows") or normalized.get("credits") or (200 <= http_status < 400):
             state = "ok"
         else:
             state = "error"
@@ -1437,9 +1500,21 @@ def _refresh_one_fireworks(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
             normalized["model"] = model
         if base_url:
             normalized["base_url"] = base_url
+        if not normalized.get("requiresAuth"):
+            balance = _fireworks_get_balance_cached(acc.label, api_key)
+            if balance and not balance.get("error"):
+                normalized["credits"] = balance
+            elif balance and balance.get("error"):
+                normalized["credits"] = {"source": "firectl", "error": balance.get("error")}
 
         raw = json.dumps(
-            {"http_status": http_status, "model": model, "base_url": base_url, "headers": headers_filtered},
+            {
+                "http_status": http_status,
+                "model": model,
+                "base_url": base_url,
+                "headers": headers_filtered,
+                "credits": normalized.get("credits"),
+            },
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -1453,7 +1528,7 @@ def _refresh_one_fireworks(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
 
         if normalized.get("requiresAuth"):
             state = "auth required"
-        elif normalized.get("windows"):
+        elif normalized.get("windows") or normalized.get("credits") or (200 <= http_status < 400):
             state = "ok"
         else:
             state = "error"

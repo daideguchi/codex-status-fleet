@@ -3,10 +3,23 @@ FROM node:20-slim
 ARG CODEX_CLI_VERSION=0.77.0
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-pip python3-venv ca-certificates \
+  && apt-get install -y --no-install-recommends python3 python3-pip python3-venv ca-certificates curl gzip \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
+
+RUN set -eux; \
+  arch="$(uname -m)"; \
+  if [ "$arch" = "x86_64" ] || [ "$arch" = "amd64" ]; then \
+    url="https://storage.googleapis.com/fireworks-public/firectl/stable/linux-amd64.gz"; \
+  elif [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then \
+    url="https://storage.googleapis.com/fireworks-public/firectl/stable/linux-arm64.gz"; \
+  else \
+    echo "Unsupported arch for firectl: $arch" >&2; \
+    exit 1; \
+  fi; \
+  curl -fsSL "$url" | gzip -dc > /usr/local/bin/firectl; \
+  chmod 0755 /usr/local/bin/firectl
 
 WORKDIR /app
 

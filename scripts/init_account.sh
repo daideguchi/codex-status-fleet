@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+if [[ -z "${BASH_VERSION:-}" ]]; then
+  exec bash "$0" "$@"
+fi
 set -euo pipefail
 
 if [[ "${1:-}" == "" ]]; then
@@ -73,4 +76,9 @@ if [[ -r /dev/tty ]]; then
   HOME="${acc_home}" codex login "$@" < /dev/tty
 else
   HOME="${acc_home}" codex login "$@"
+fi
+
+label_q="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${label}" 2>/dev/null || true)"
+if [[ "${label_q}" != "" ]] && command -v curl >/dev/null 2>&1; then
+  curl -fsS -X POST "http://localhost:8080/refresh?label=${label_q}" >/dev/null 2>&1 || true
 fi
