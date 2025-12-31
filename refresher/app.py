@@ -552,6 +552,70 @@ def _extract_fireworks_keys(text: str) -> list[str]:
     return out
 
 
+def _parse_fireworks_memo(text: str) -> list[dict[str, Any]]:
+    """
+    Accepts either:
+      - one key per line, OR
+      - a human memo style like:
+          user@example.com
+          - fw_XXXX
+          - note...
+    Returns list of {key,email,note}.
+    """
+    entries: list[dict[str, Any]] = []
+
+    current_email: str | None = None
+    current_key: str | None = None
+    current_note_parts: list[str] = []
+    pre_note_parts: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_key, current_note_parts, pre_note_parts
+        if not current_key:
+            pre_note_parts = []
+            current_note_parts = []
+            return
+        note = " ".join([p for p in current_note_parts if p]).strip() or None
+        entries.append({"key": current_key, "email": current_email, "note": note})
+        current_key = None
+        current_note_parts = []
+        pre_note_parts = []
+
+    for raw_line in (text or "").splitlines():
+        raw = raw_line.strip()
+        if not raw:
+            continue
+
+        emails = _extract_emails(raw)
+        if emails:
+            flush()
+            current_email = emails[0]
+            continue
+
+        # Strip common bullets.
+        s = re.sub(r"^\s*[-*•・]+\s*", "", raw).strip()
+        if not s:
+            continue
+
+        if _FIREWORKS_KEY_LINE_RE.match(s):
+            if current_key:
+                flush()
+            current_key = s
+            if pre_note_parts and not current_note_parts:
+                current_note_parts.extend(pre_note_parts)
+                pre_note_parts = []
+            continue
+
+        # Treat as note.
+        if current_key:
+            current_note_parts.append(s)
+        else:
+            pre_note_parts.append(s)
+
+    flush()
+    return entries
+
+
 def _make_label_from_anthropic_key(key: str, prefix: str | None = None) -> str:
     safe_prefix = re.sub(r"[^a-z0-9]+", "_", (prefix or "claude").strip().lower()).strip("_")
     if not safe_prefix:
@@ -570,6 +634,18 @@ def _make_label_from_fireworks_key(key: str, prefix: str | None = None) -> str:
     tail = key.strip().lower()[-10:]
     safe_tail = re.sub(r"[^a-z0-9]+", "", tail).strip("_") or "key"
     return f"{safe_prefix}_{safe_tail}"
+
+
+def _make_label_from_fireworks_email(email: str, prefix: str | None = None) -> str:
+    safe_prefix = re.sub(
+        r"[^a-z0-9]+", "_", (prefix or "fireworks").strip().lower()
+    ).strip("_")
+    if not safe_prefix:
+        safe_prefix = "fireworks"
+    base = _make_label_from_email(email)
+    base = base[len("acc_") :] if base.startswith("acc_") else base
+    base = base.strip("_") or "account"
+    return f"{safe_prefix}_{base}"
 
 
 def _make_unique_label(base: str, existing: set[str]) -> str:
@@ -833,20 +909,21 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
     if not config_path.exists() or not config_path.is_file():
         raise HTTPException(status_code=500, detail=f"config not found: {CONFIG_PATH}")
 
-    keys: list[str] = []
+    entries: list[dict[str, Any]] = []
     if payload.text:
-        keys.extend(_extract_fireworks_keys(payload.text))
+        entries.extend(_parse_fireworks_memo(payload.text))
     for k in payload.keys or []:
-        if isinstance(k, str):
-            keys.extend(_extract_fireworks_keys(k))
+        if isinstance(k, str) and k.strip():
+            entries.extend(_parse_fireworks_memo(k))
 
-    uniq: list[str] = []
+    uniq: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for k in keys:
-        if k in seen:
+    for e in entries:
+        key = (e.get("key") or "").strip()
+        if not key or key in seen:
             continue
-        uniq.append(k)
-        seen.add(k)
+        uniq.append(e)
+        seen.add(key)
 
     if not uniq:
         raise HTTPException(status_code=400, detail="no fireworks api keys found")
@@ -875,6 +952,7 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
 
         existing_labels: set[str] = set()
         existing_by_label: dict[str, dict[str, Any]] = {}
+        existing_by_email: dict[str, dict[str, Any]] = {}
         for a in accounts:
             if not isinstance(a, dict):
                 continue
@@ -883,16 +961,30 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
                 continue
             existing_labels.add(label)
             existing_by_label[label] = a
+            provider = (a.get("provider") or "").strip().lower()
+            exp = (a.get("expected_email") or "").strip().lower()
+            if provider == "fireworks" and exp:
+                existing_by_email[exp] = a
 
         added = 0
         updated = 0
         labels: list[str] = []
-        for key in uniq:
-            base = _make_label_from_fireworks_key(key, prefix=label_prefix)
-            if base in existing_by_label:
-                label = base
+        for e in uniq:
+            key = (e.get("key") or "").strip()
+            email = (e.get("email") or "").strip().lower() or None
+            note_from_text = (e.get("note") or "").strip() or None
+
+            base = (
+                _make_label_from_fireworks_email(email, prefix=label_prefix)
+                if email
+                else _make_label_from_fireworks_key(key, prefix=label_prefix)
+            )
+
+            existing = existing_by_email.get(email) if email else None
+            if existing is not None:
+                label = (existing.get("label") or "").strip() or base
             else:
-                label = _make_unique_label(base, existing_labels)
+                label = base if base in existing_by_label else _make_unique_label(base, existing_labels)
                 existing_labels.add(label)
             labels.append(label)
 
@@ -903,14 +995,18 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
                     "provider": "fireworks",
                     "enabled": bool(payload.enabled),
                 }
-                if note:
-                    entry["note"] = note
+                if email:
+                    entry["expected_email"] = email
+                if note_from_text or note:
+                    entry["note"] = note_from_text or note
                 if model:
                     entry["fireworks_model"] = model
                 if base_url:
                     entry["fireworks_base_url"] = base_url
                 accounts.append(entry)
                 existing_by_label[label] = entry
+                if email:
+                    existing_by_email[email] = entry
                 added += 1
             else:
                 changed = False
@@ -920,8 +1016,12 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
                 if bool(entry.get("enabled", True)) != bool(payload.enabled):
                     entry["enabled"] = bool(payload.enabled)
                     changed = True
-                if note and (entry.get("note") or "").strip() != note:
-                    entry["note"] = note
+                if email and (entry.get("expected_email") or "").strip().lower() != email:
+                    entry["expected_email"] = email
+                    changed = True
+                note_to_set = note_from_text or note
+                if note_to_set and (entry.get("note") or "").strip() != note_to_set:
+                    entry["note"] = note_to_set
                     changed = True
                 if model and (entry.get("fireworks_model") or entry.get("model") or "").strip() != model:
                     entry["fireworks_model"] = model
@@ -940,7 +1040,7 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
             secrets_dir = account_home / ".secrets"
             secrets_dir.mkdir(parents=True, exist_ok=True)
             key_path = secrets_dir / "fireworks_api_key.txt"
-            _write_text_atomic(key_path, key.strip() + "\n")
+            _write_text_atomic(key_path, key + "\n")
 
         _write_json_atomic(config_path, cfg)
 
@@ -950,6 +1050,20 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
             raise HTTPException(status_code=502, detail=f"failed to push registry: {e}") from e
 
     return {"ok": True, "added": added, "updated": updated, "labels": sorted(set(labels))}
+
+
+@app.post("/config/push_registry")
+def config_push_registry():
+    try:
+        _push_registry_from_config()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=502, detail=f"collector /registry failed: HTTP {e.code}: {body}") from e
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"collector /registry failed: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {"ok": True}
 
 
 def _rpc_rate_limits(account_home: Path) -> tuple[dict[str, Any], str | None]:

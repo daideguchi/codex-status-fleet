@@ -839,6 +839,12 @@ UI_HTML = """<!doctype html>
         }
       }
 
+      async function syncRegistry() {
+        try {
+          await fetch("/registry/sync", { method: "POST" });
+        } catch {}
+      }
+
       async function addAccounts() {
         const emails = extractEmails(addText.value || "");
         if (!emails.length) {
@@ -1094,8 +1100,10 @@ UI_HTML = """<!doctype html>
 	      loadSort();
 	      applySortIndicators();
 
-	      loadLatest().then(() => {
-	        if (isReloadNavigation()) updateNow();
+	      syncRegistry().finally(() => {
+	        loadLatest().then(() => {
+	          if (isReloadNavigation()) updateNow();
+	        });
 	      });
 	    </script>
 	  </body>
@@ -1305,6 +1313,31 @@ def fireworks_add_keys(payload: AddFireworksKeysPayload):
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}, method="POST"
         )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {"ok": True}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except Exception:
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) else body
+        raise HTTPException(status_code=e.code, detail=detail)
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.post("/registry/sync")
+def registry_sync():
+    if not REFRESHER_BASE_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    url = f"{REFRESHER_BASE_URL}/config/push_registry"
+    try:
+        req = urllib.request.Request(url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read().decode("utf-8")
             return json.loads(body) if body else {"ok": True}

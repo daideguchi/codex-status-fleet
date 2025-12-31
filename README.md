@@ -148,6 +148,7 @@ curl -s http://localhost:8080/latest | python3 -m json.tool
   - 取得時は Anthropic API に最小リクエスト（`max_tokens=1`）を送ってヘッダを読むため、少量ですがリクエスト/トークンを消費します
 - `http://localhost:8080/` → **Add Fireworks keys**
   - API キーを貼り付けると `accounts.json` に `provider: "fireworks"` を追加し、キーを `accounts/<label>/.secrets/fireworks_api_key.txt` に保存します（ログイン不要）
+  - メモ形式（メール→`- fw_...`→`- note`）の貼り付けもOKで、メール/用途（note）も自動で取り込みます
   - 取得時は Fireworks API にリクエストを投げてヘッダを読むため、リクエスト枠は消費します（通常トークンは消費しません）
 
 （CLI で追加したい場合）
