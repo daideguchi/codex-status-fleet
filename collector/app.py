@@ -580,7 +580,13 @@ UI_HTML = """<!doctype html>
         refreshBtn.disabled = true;
 
         const started = Date.now();
-        statusEl.textContent = "Refreshing (fetching latest limits)...";
+        const labelSuffix = label ? ` (${label})` : "";
+        const renderRefreshing = () => {
+          const sec = ((Date.now() - started) / 1000).toFixed(1);
+          statusEl.textContent = `Refreshing (fetching latest limits)${labelSuffix}… ${sec}s`;
+        };
+        renderRefreshing();
+        const tick = setInterval(renderRefreshing, 250);
         try {
           const url = label ? (`/refresh?label=${encodeURIComponent(label)}`) : "/refresh";
           const res = await fetch(url, { method: "POST" });
@@ -604,6 +610,7 @@ UI_HTML = """<!doctype html>
           await loadLatest();
           statusEl.textContent = `Refresh error: ${e}`;
         } finally {
+          clearInterval(tick);
           refreshing = false;
           refreshBtn.disabled = false;
         }
