@@ -12,6 +12,30 @@ if [[ ! -f "${config_path}" ]]; then
   exit 1
 fi
 
+force="false"
+only_labels=""
+pass_args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force)
+      force="true"
+      shift
+      ;;
+    --only-label)
+      if [[ "${2:-}" == "" ]]; then
+        echo "Missing value for --only-label" >&2
+        exit 2
+      fi
+      only_labels="${only_labels}${2}"$'\n'
+      shift 2
+      ;;
+    *)
+      pass_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
 labels="$(
   python3 - "${config_path}" <<'PY'
 import json
@@ -40,15 +64,31 @@ if [[ "${labels}" == "" ]]; then
   exit 1
 fi
 
+if [[ "${only_labels}" != "" ]]; then
+  wanted="$(printf "%s" "${only_labels}" | awk 'NF{print $0}' | sort -u)"
+  labels="$(printf "%s" "${labels}" | awk 'NF{print $0}' | sort -u)"
+  labels="$(comm -12 <(printf "%s\n" "${labels}") <(printf "%s\n" "${wanted}"))"
+  if [[ "${labels}" == "" ]]; then
+    echo "No matching labels to login (check --only-label)" >&2
+    exit 1
+  fi
+fi
+
 while IFS= read -r label; do
   if [[ "${label}" == "" ]]; then
     continue
   fi
   auth_path="${root_dir}/accounts/${label}/.codex/auth.json"
-  if [[ -f "${auth_path}" ]]; then
+  if [[ -f "${auth_path}" && "${force}" != "true" ]]; then
     echo "==> ${label}: already logged in (${auth_path})"
     continue
   fi
+  if [[ -f "${auth_path}" && "${force}" == "true" ]]; then
+    ts="$(date -u +"%Y%m%dT%H%M%SZ")"
+    bak="${auth_path}.bak.${ts}"
+    mv "${auth_path}" "${bak}"
+    echo "==> ${label}: force re-login (backup: ${bak})"
+  fi
   echo "==> ${label}: login start"
-  ./scripts/init_account.sh "${label}" "$@"
+  ./scripts/init_account.sh "${label}" "${pass_args[@]}"
 done <<< "${labels}"
