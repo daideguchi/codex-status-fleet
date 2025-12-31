@@ -30,16 +30,16 @@ UI_HTML = """<!doctype html>
     <title>Codex Status Fleet</title>
     <style>
       :root { color-scheme: light dark; }
-      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; margin: 16px; }
-      h1 { font-size: 18px; margin: 0 0 8px; }
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; margin: 12px; }
+      h1 { font-size: 16px; margin: 0 0 8px; }
       .meta { font-size: 12px; opacity: 0.8; margin-bottom: 12px; }
       .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
       button { padding: 6px 10px; border-radius: 8px; border: 1px solid #8884; background: #8882; cursor: pointer; }
       button:hover { background: #8883; }
       input, textarea, select { padding: 6px 10px; border-radius: 8px; border: 1px solid #8884; background: #8881; }
       textarea { width: 100%; min-height: 140px; resize: vertical; }
-      table { width: 100%; border-collapse: collapse; font-size: 13px; }
-      th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #8883; vertical-align: top; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.25; }
+      th, td { text-align: left; padding: 6px 6px; border-bottom: 1px solid #8883; vertical-align: top; }
       th { position: sticky; top: 0; background: Canvas; z-index: 1; }
       .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid #8884; font-size: 12px; }
       .ok { color: #0a7; border-color: #0a74; }
@@ -53,9 +53,10 @@ UI_HTML = """<!doctype html>
       .card { background: Canvas; border: 1px solid #8884; border-radius: 12px; padding: 12px; width: min(720px, 100%); }
       .card h2 { font-size: 14px; margin: 0 0 8px; }
       .small { font-size: 12px; opacity: 0.85; }
-      .limits { display: flex; flex-direction: column; gap: 10px; min-width: 220px; }
-      .limit-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
-      .bar { height: 10px; border-radius: 999px; border: 1px solid #8884; background: #8882; overflow: hidden; }
+      .limits { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+      .limit { display: flex; gap: 6px; align-items: center; padding: 3px 8px; border-radius: 999px; border: 1px solid #8883; background: #8881; }
+      .limit .name { opacity: 0.85; }
+      .bar { height: 8px; width: 96px; border-radius: 999px; border: 1px solid #8884; background: #8882; overflow: hidden; }
       .fill { height: 100%; width: 0%; border-radius: 999px; background: #8886; }
       .fill.ok { background: #0a7; }
       .fill.warn { background: #d9a200; }
@@ -64,7 +65,6 @@ UI_HTML = """<!doctype html>
       .pct.ok { color: #0a7; }
       .pct.warn { color: #d9a200; }
       .pct.bad { color: #d55; }
-      .limit-meta { display: flex; gap: 10px; flex-wrap: wrap; }
     </style>
   </head>
   <body>
@@ -378,21 +378,16 @@ UI_HTML = """<!doctype html>
             metaParts.push(`${w.remaining}/${w.limit}`);
           }
           if (reset !== "-" && reset !== "") metaParts.push(`resets ${reset}`);
-          const metaHtml = metaParts.length
-            ? `<div class="limit-meta small muted">${metaParts.map(esc).join(" · ")}</div>`
-            : "";
+          const title = `${name}: ${leftText}` + (metaParts.length ? ` (${metaParts.join(" · ")})` : "");
 
           const width = leftPct === null ? 0 : leftPct;
           limitBlocks.push(`
-            <div>
-              <div class="limit-top">
-                <span class="mono">${esc(name)}</span>
-                <span class="mono pct ${cls}">${esc(leftText)}</span>
-              </div>
-              <div class="bar" title="${esc(name)} ${esc(leftText)}">
+            <div class="limit" title="${esc(title)}">
+              <span class="mono name">${esc(name)}</span>
+              <span class="mono pct ${cls}">${esc(leftText)}</span>
+              <div class="bar" aria-label="${esc(title)}">
                 <div class="fill ${cls}" style="width: ${width}%;"></div>
               </div>
-              ${metaHtml}
             </div>
           `);
         };
