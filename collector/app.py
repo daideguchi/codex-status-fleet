@@ -76,6 +76,8 @@ UI_HTML = """<!doctype html>
       .credit.warn { color: #d9a200; border-color: #d9a244; }
       .credit.bad { color: #d55; border-color: #d554; }
       .tablebtn { padding: 1px 7px; border-radius: 6px; font-size: 12px; }
+      .hide-resets .col-resets { display: none; }
+      .hide-credits .col-credits { display: none; }
       tr.row-warn td { background: rgba(217, 162, 0, 0.08); }
       tr.row-bad td { background: rgba(213, 85, 85, 0.10); }
     </style>
@@ -90,6 +92,13 @@ UI_HTML = """<!doctype html>
 	      <button id="add">Add accounts</button>
 	      <button id="addKeys">Add Claude keys</button>
 	      <button id="addFw">Add Fireworks keys</button>
+	      <label class="muted">View
+	        <select id="viewMode">
+	          <option value="all" selected>All</option>
+	          <option value="subscription">Subscription</option>
+	          <option value="credits">Credits</option>
+	        </select>
+	      </label>
 	      <label class="muted">Filter <input id="filter" placeholder="email / note / provider" /></label>
 	      <span id="summary" class="muted"></span>
 	      <span id="status" class="muted"></span>
@@ -101,7 +110,8 @@ UI_HTML = """<!doctype html>
 	          <th class="sortable" data-sort="account">Account / Note</th>
 	          <th class="sortable" data-sort="plan">Plan / Model</th>
 	          <th class="sortable" data-sort="limits">Limits</th>
-	          <th class="sortable" data-sort="credits">Credits</th>
+	          <th class="sortable col-resets" data-sort="resets">Resets</th>
+	          <th class="sortable col-credits" data-sort="credits">Credits</th>
 	          <th class="sortable" data-sort="state">State</th>
 	          <th>Action</th>
 	        </tr>
@@ -192,6 +202,33 @@ UI_HTML = """<!doctype html>
 	        </div>
 	      </div>
 	    </div>
+	    <div id="noteModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
+	      <div class="card">
+	        <div class="row" style="justify-content: space-between;">
+	          <h2>Edit note</h2>
+	          <button id="noteClose">Close</button>
+	        </div>
+	        <div class="small">Append a short comment to this account's note (saved into accounts.json + registry).</div>
+	        <div style="height: 8px"></div>
+	        <div class="row">
+	          <span class="muted">Target</span>
+	          <span id="noteTarget" class="mono"></span>
+	        </div>
+	        <div style="height: 8px"></div>
+	        <div class="row">
+	          <label class="muted">Append <input id="noteAppend" placeholder="comment" /></label>
+	          <label class="muted">Separator <input id="noteSep" value=" · " /></label>
+	        </div>
+	        <div style="height: 8px"></div>
+	        <div class="small muted">Current</div>
+	        <pre id="noteCurrent" class="mono small" style="white-space: pre-wrap; margin: 0;"></pre>
+	        <div style="height: 10px"></div>
+	        <div class="row" style="justify-content: flex-end;">
+	          <button id="noteCancel">Cancel</button>
+	          <button id="noteSave">Save</button>
+	        </div>
+	      </div>
+	    </div>
 	    <script>
 	      const $ = (id) => document.getElementById(id);
       const rowsEl = $("rows");
@@ -201,6 +238,7 @@ UI_HTML = """<!doctype html>
 	      const addBtn = $("add");
 	      const addKeysBtn = $("addKeys");
 	      const addFwBtn = $("addFw");
+	      const viewModeEl = $("viewMode");
 	      const filterEl = $("filter");
       const addModal = $("addModal");
       const addClose = $("addClose");
@@ -234,9 +272,19 @@ UI_HTML = """<!doctype html>
 		      const fwEnabled = $("fwEnabled");
 		      const fwFound = $("fwFound");
 		      const fwPreview = $("fwPreview");
+		      const noteModal = $("noteModal");
+		      const noteClose = $("noteClose");
+		      const noteCancel = $("noteCancel");
+		      const noteSave = $("noteSave");
+		      const noteTarget = $("noteTarget");
+		      const noteAppend = $("noteAppend");
+		      const noteSep = $("noteSep");
+		      const noteCurrent = $("noteCurrent");
 	      let cachedItems = [];
 	      let lastUpdateText = "";
 	      let refreshing = false;
+	      let viewMode = "all"; // all | subscription | credits
+	      let noteLabel = "";
 	      let sortKey = null;
 	      let sortDir = "asc"; // asc | desc
 
@@ -245,9 +293,32 @@ UI_HTML = """<!doctype html>
 	        account: "asc",
 	        plan: "asc",
 	        limits: "desc",
+	        resets: "asc",
 	        credits: "desc",
 	        state: "desc",
 	      };
+
+	      function loadViewMode() {
+	        try {
+	          const v = localStorage.getItem("codex_status_fleet_view");
+	          if (v === "all" || v === "subscription" || v === "credits") viewMode = v;
+	        } catch {}
+	      }
+
+	      function saveViewMode() {
+	        try {
+	          localStorage.setItem("codex_status_fleet_view", viewMode);
+	        } catch {}
+	      }
+
+	      function applyViewMode() {
+	        try {
+	          document.body.classList.remove("hide-resets", "hide-credits");
+	          if (viewMode === "subscription") document.body.classList.add("hide-credits");
+	          else if (viewMode === "credits") document.body.classList.add("hide-resets");
+	          if (viewModeEl) viewModeEl.value = viewMode;
+	        } catch {}
+	      }
 
 	      function loadSort() {
 	        try {
@@ -399,6 +470,17 @@ UI_HTML = """<!doctype html>
 	        return Math.floor(t / 1000);
 	      }
 
+	      function _resetsEpoch(item) {
+	        const a = _windowResetEpoch(item, "5h");
+	        const b = _windowResetEpoch(item, "weekly");
+	        const an = (typeof a === "number" && Number.isFinite(a)) ? a : null;
+	        const bn = (typeof b === "number" && Number.isFinite(b)) ? b : null;
+	        if (an === null && bn === null) return null;
+	        if (an === null) return bn;
+	        if (bn === null) return an;
+	        return Math.min(an, bn);
+	      }
+
 	      function _accountKey(item) {
 	        const n = _norm(item);
 	        const r = _reg(item);
@@ -493,6 +575,10 @@ UI_HTML = """<!doctype html>
 	          const c2 = _cmpNum(a5, b5, dir);
 	          return c2 || _cmpText(_accountKey(a), _accountKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
 	        }
+	        if (key === "resets") {
+	          const c = _cmpNum(_resetsEpoch(a), _resetsEpoch(b), dir);
+	          return c || _cmpText(_accountKey(a), _accountKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
+	        }
 	        if (key === "credits") {
 	          const c = _cmpNum(_creditAmount(a), _creditAmount(b), dir);
 	          return c || _cmpText(_accountKey(a), _accountKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
@@ -551,6 +637,89 @@ UI_HTML = """<!doctype html>
         } else {
           fwModal.classList.remove("open");
           fwModal.setAttribute("aria-hidden", "true");
+        }
+      }
+
+      function setNoteModalOpen(open) {
+        if (open) {
+          noteModal.classList.add("open");
+          noteModal.setAttribute("aria-hidden", "false");
+          try { noteAppend.focus(); } catch {}
+        } else {
+          noteModal.classList.remove("open");
+          noteModal.setAttribute("aria-hidden", "true");
+        }
+      }
+
+      function _findByLabel(label) {
+        const items = Array.isArray(cachedItems) ? cachedItems : [];
+        for (const it of items) {
+          if (String(it && it.account_label ? it.account_label : "") === String(label || "")) return it;
+        }
+        return null;
+      }
+
+      function openNote(label) {
+        noteLabel = String(label || "");
+        const it = _findByLabel(noteLabel);
+        const parsed = it ? (it.parsed || {}) : {};
+        const norm = parsed.normalized || {};
+        const reg = it ? (it.registry || {}) : {};
+        const email = String(norm.account_email || norm.expected_email || reg.expected_email || "").trim();
+        const note = String(reg.note || "").trim();
+
+        if (noteTarget) noteTarget.textContent = email ? `${noteLabel} (${email})` : noteLabel;
+        if (noteCurrent) noteCurrent.textContent = note || "";
+        if (noteAppend) noteAppend.value = "";
+
+        setModalOpen(false);
+        setKeysModalOpen(false);
+        setFwModalOpen(false);
+        setNoteModalOpen(true);
+      }
+
+      async function saveNote() {
+        if (!noteLabel) return;
+        const text = (noteAppend.value || "").trim();
+        if (!text) {
+          statusEl.textContent = "Note: enter text to append";
+          return;
+        }
+
+        noteSave.disabled = true;
+        noteCancel.disabled = true;
+        noteClose.disabled = true;
+        statusEl.textContent = "Saving note...";
+        try {
+          const payload = {
+            account_label: noteLabel,
+            append: text,
+            separator: (noteSep.value || "").toString(),
+            replace: false,
+          };
+          const res = await fetch("/notes/append", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          let body = null;
+          try { body = await res.json(); } catch {}
+          if (!res.ok) {
+            const msg = (body && (body.detail || body.error)) ? (body.detail || body.error) : `HTTP ${res.status}`;
+            throw new Error(msg);
+          }
+
+          setNoteModalOpen(false);
+          noteLabel = "";
+          await loadLatest();
+          lastUpdateText = `Note updated — ${new Date().toLocaleTimeString()}`;
+          renderFromCache();
+        } catch (e) {
+          statusEl.textContent = `Note error: ${e}`;
+        } finally {
+          noteSave.disabled = false;
+          noteCancel.disabled = false;
+          noteClose.disabled = false;
         }
       }
 
@@ -780,6 +949,24 @@ UI_HTML = """<!doctype html>
         }
         const limitsHtml = limitBlocks.length ? `<span class="limits">${limitBlocks.join("")}</span>` : "-";
 
+        const resetsParts = [];
+        const resetsTitleParts = [];
+        const r5 = windows["5h"] && windows["5h"].resetsAtIsoUtc;
+        const rw = windows["weekly"] && windows["weekly"].resetsAtIsoUtc;
+        if (r5) {
+          const short = fmtResetShort(r5) || fmtTs(r5);
+          resetsParts.push(`5h ${short}`);
+          resetsTitleParts.push(`5h resets ${fmtTs(r5)}`);
+        }
+        if (rw) {
+          const short = fmtResetShort(rw) || fmtTs(rw);
+          resetsParts.push(`wk ${short}`);
+          resetsTitleParts.push(`weekly resets ${fmtTs(rw)}`);
+        }
+        const resetsText = resetsParts.join(" · ");
+        const resetsTitle = resetsTitleParts.join(" | ");
+        const resetsHtml = resetsText ? `<span class="mono nowrap" title="${esc(resetsTitle)}">${esc(resetsText)}</span>` : "-";
+
         const s = classify(item);
         const left5h = leftOf(windows["5h"]);
         const leftWeekly = leftOf(windows["weekly"]);
@@ -802,9 +989,13 @@ UI_HTML = """<!doctype html>
             <td>${accountHtml}</td>
             <td class="mono">${esc(planOrModel)}</td>
             <td>${limitsHtml}</td>
-            <td class="mono nowrap">${creditsHtml}</td>
+            <td class="mono nowrap col-resets">${resetsHtml}</td>
+            <td class="mono nowrap col-credits">${creditsHtml}</td>
             <td>${state}</td>
-            <td><button class="tablebtn" title="Update" aria-label="Update" data-label="${encodeURIComponent(safe(item.account_label))}">↻</button></td>
+            <td>
+              <button class="tablebtn" title="Update" aria-label="Update" data-action="update" data-label="${encodeURIComponent(safe(item.account_label))}">↻</button>
+              <button class="tablebtn" title="Note" aria-label="Note" data-action="note" data-label="${encodeURIComponent(safe(item.account_label))}">✎</button>
+            </td>
           </tr>
         `;
       }
@@ -812,9 +1003,22 @@ UI_HTML = """<!doctype html>
 	      function renderFromCache() {
 	        const items = Array.isArray(cachedItems) ? cachedItems : [];
 
+	        const groupOf = (it) => {
+	          const parsed = it.parsed || {};
+	          const norm = parsed.normalized || {};
+	          const reg = it.registry || {};
+	          const provider = String((reg.provider || norm.provider || "")).toLowerCase();
+	          if (provider === "codex" || provider === "openai_codex" || provider === "openai") return "subscription";
+	          if (provider.startsWith("anthropic") || provider.startsWith("claude") || provider.startsWith("fireworks")) return "credits";
+	          return "other";
+	        };
+	        const inView = (viewMode === "subscription" || viewMode === "credits")
+	          ? items.filter((it) => groupOf(it) === viewMode)
+	          : items;
+
 	        const q = (filterEl.value || "").trim().toLowerCase();
 	        const filtered = q
-	          ? items.filter((it) => {
+	          ? inView.filter((it) => {
 	              const parsed = it.parsed || {};
 	              const norm = parsed.normalized || {};
 	              const reg = it.registry || {};
@@ -831,7 +1035,7 @@ UI_HTML = """<!doctype html>
 	                model.includes(q)
 	              );
 	            })
-	          : items;
+	          : inView;
 
 	        const sorted = sortKey ? [...filtered].sort(_sortComparator) : filtered;
 	        rowsEl.innerHTML = sorted.map(rowHtml).join("");
@@ -846,7 +1050,7 @@ UI_HTML = """<!doctype html>
 	        }
 	        summaryEl.textContent = `total:${counts.total} ok:${counts.ok} auth:${counts.auth_required} pending:${counts.pending} err:${counts.errors} disabled:${counts.disabled}`;
 	        const suffix = lastUpdateText ? ` — ${lastUpdateText}` : "";
-	        statusEl.textContent = `${sorted.length}/${items.length} rows${suffix}`;
+	        statusEl.textContent = `${sorted.length}/${inView.length} rows${suffix}`;
 	      }
 
       async function loadLatest() {
@@ -1107,23 +1311,43 @@ UI_HTML = """<!doctype html>
       fwModal.addEventListener("click", (ev) => {
         if (ev.target === fwModal) setFwModalOpen(false);
       });
+      noteClose.addEventListener("click", () => setNoteModalOpen(false));
+      noteCancel.addEventListener("click", () => setNoteModalOpen(false));
+      noteSave.addEventListener("click", saveNote);
+      noteModal.addEventListener("click", (ev) => {
+        if (ev.target === noteModal) setNoteModalOpen(false);
+      });
       document.addEventListener("keydown", (ev) => {
         if (ev.key !== "Escape") return;
         if (addModal.classList.contains("open")) setModalOpen(false);
         if (keysModal.classList.contains("open")) setKeysModalOpen(false);
         if (fwModal.classList.contains("open")) setFwModalOpen(false);
+        if (noteModal.classList.contains("open")) setNoteModalOpen(false);
       });
       filterEl.addEventListener("input", renderFromCache);
+      if (viewModeEl) {
+        viewModeEl.addEventListener("change", () => {
+          const v = (viewModeEl.value || "").trim();
+          viewMode = (v === "subscription" || v === "credits") ? v : "all";
+          saveViewMode();
+          applyViewMode();
+          renderFromCache();
+        });
+      }
       rowsEl.addEventListener("click", (ev) => {
         const t = ev.target;
-        const btn = t && t.closest ? t.closest("button[data-label]") : null;
+        const btn = t && t.closest ? t.closest("button[data-action][data-label]") : null;
         if (!btn) return;
+        const action = btn.getAttribute("data-action") || "update";
         const labelEnc = btn.getAttribute("data-label");
         const label = labelEnc ? decodeURIComponent(labelEnc) : "";
         if (!label) return;
-        updateNow(label);
+        if (action === "note") openNote(label);
+        else updateNow(label);
       });
 
+	      loadViewMode();
+	      applyViewMode();
 	      loadSort();
 	      applySortIndicators();
 
@@ -1229,6 +1453,13 @@ class AddFireworksKeysPayload(BaseModel):
     label_prefix: str | None = None
     fireworks_model: str | None = None
     fireworks_base_url: str | None = None
+
+
+class AppendNotePayload(BaseModel):
+    account_label: str
+    append: str
+    separator: str | None = None
+    replace: bool = False
 
 
 @app.get("/healthz")
@@ -1340,6 +1571,47 @@ def fireworks_add_keys(payload: AddFireworksKeysPayload):
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}, method="POST"
         )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {"ok": True}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except Exception:
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) else body
+        raise HTTPException(status_code=e.code, detail=detail)
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.post("/notes/append")
+def notes_append(payload: AppendNotePayload):
+    if not REFRESHER_BASE_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    label = (payload.account_label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="account_label is required")
+    append_text = (payload.append or "").strip()
+    if not append_text:
+        raise HTTPException(status_code=400, detail="append is required")
+
+    url = f"{REFRESHER_BASE_URL}/config/note_append"
+    data = json.dumps(
+        {
+            "label": label,
+            "append": append_text,
+            "separator": payload.separator,
+            "replace": bool(payload.replace),
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    try:
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read().decode("utf-8")
             return json.loads(body) if body else {"ok": True}

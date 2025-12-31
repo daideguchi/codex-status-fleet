@@ -756,6 +756,13 @@ class AddFireworksKeysPayload(BaseModel):
     fireworks_base_url: str | None = None
 
 
+class AppendNotePayload(BaseModel):
+    label: str
+    append: str
+    separator: str | None = None
+    replace: bool = False
+
+
 @app.post("/config/add_accounts")
 def config_add_accounts(payload: AddAccountsPayload):
     config_path = Path(CONFIG_PATH)
@@ -860,6 +867,62 @@ def config_add_accounts(payload: AddAccountsPayload):
             raise HTTPException(status_code=502, detail=f"failed to push registry: {e}") from e
 
     return {"ok": True, "added": added, "updated": updated, "labels": sorted(set(labels))}
+
+
+@app.post("/config/note_append")
+def config_note_append(payload: AppendNotePayload):
+    config_path = Path(CONFIG_PATH)
+    if not config_path.exists() or not config_path.is_file():
+        raise HTTPException(status_code=500, detail=f"config not found: {CONFIG_PATH}")
+
+    label = (payload.label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label is required")
+    append_text = (payload.append or "").strip()
+    if not append_text:
+        raise HTTPException(status_code=400, detail="append is required")
+    sep = (payload.separator or "").strip()
+    if not sep:
+        sep = " · "
+
+    with _config_lock:
+        with _refresh_cond:
+            if _refresh_running:
+                ok = _refresh_cond.wait_for(lambda: not _refresh_running, timeout=REFRESH_JOIN_TIMEOUT_SEC)
+                if not ok:
+                    raise HTTPException(status_code=409, detail="refresh already running")
+
+        cfg = _read_json(config_path)
+        accounts = cfg.get("accounts")
+        if not isinstance(accounts, list):
+            raise HTTPException(status_code=500, detail="config.accounts must be an array")
+
+        target: dict[str, Any] | None = None
+        for a in accounts:
+            if not isinstance(a, dict):
+                continue
+            if (a.get("label") or "").strip() == label:
+                target = a
+                break
+
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"label not found: {label}")
+
+        cur = (target.get("note") or "").strip()
+        if payload.replace or not cur:
+            new_note = append_text
+        else:
+            new_note = f"{cur}{sep}{append_text}"
+
+        target["note"] = new_note
+        _write_json_atomic(config_path, cfg)
+
+        try:
+            _push_registry_from_config()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"failed to push registry: {e}") from e
+
+    return {"ok": True, "label": label, "note": new_note}
 
 
 @app.post("/config/add_anthropic_keys")
