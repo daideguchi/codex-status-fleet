@@ -19,5 +19,8 @@ echo "    HOME=${acc_home}"
 echo "    Auth will be stored under: ${acc_home}/.codex/"
 echo
 
-HOME="${acc_home}" codex login "$@"
-
+if [[ -r /dev/tty ]]; then
+  HOME="${acc_home}" codex login "$@" < /dev/tty
+else
+  HOME="${acc_home}" codex login "$@"
+fi
