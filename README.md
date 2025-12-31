@@ -1,4 +1,4 @@
-# 08_codex_status_fleet
+# Codex Status Fleet
 
 ChatGPT サブスクの **複数 Codex アカウント**について、`codex app-server` の JSON-RPC（`account/rateLimits/read`）を定期取得して、中央の Collector に集約するための最小構成です。
 
@@ -32,7 +32,7 @@ ChatGPT サブスクの **複数 Codex アカウント**について、`codex ap
 1) 設定ファイルを作成
 
 ```bash
-cd 08_codex_status_fleet
+cd codex-status-fleet
 cp accounts.example.json accounts.json
 ```
 
@@ -101,7 +101,7 @@ curl -s http://localhost:8080/latest | python3 -m json.tool
 注意:
 
 - 一覧には `/registry` に登録されたアカウントが、まだ未取得でも `pending` として出ます
-- ログイン情報（セッション/トークン）は `08_codex_status_fleet/accounts/<label>/.codex/` に保存され、コンテナ再起動後も保持されます
+- ログイン情報（セッション/トークン）は `accounts/<label>/.codex/` に保存され、コンテナ再起動後も保持されます
 
 ## 手動更新モード（ポーリングなし）
 
