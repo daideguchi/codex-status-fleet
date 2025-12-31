@@ -147,6 +147,12 @@ python3 scripts/add_accounts.py --config accounts.json --in emails.txt --plan pl
 2) まとめてログイン（未ログインだけ / Codex のみ）
 
 ```bash
+./scripts/login_all.sh accounts.json
+```
+
+※ `--device-auth` を使いたい場合は、ChatGPT 側のセキュリティ設定で Codex のデバイスコード認証を有効化してから実行してください:
+
+```bash
 ./scripts/login_all.sh accounts.json --device-auth
 ```
 
@@ -156,9 +162,11 @@ python3 scripts/add_accounts.py --config accounts.json --in emails.txt --plan pl
 
 - ログイン済みか確認: `./scripts/probe_account.sh acc1`
 - ログイン済み一覧: `python3 scripts/login_status.py --config accounts.json`
+- 未ログインだけ（label一覧）: `python3 scripts/login_status.py --config accounts.json --need-login`
+- auth.json をバックアップから復元: `python3 scripts/restore_auth.py --config accounts.json`
 - メール一覧を追加: `python3 scripts/add_accounts.py --config accounts.json --in emails.txt --plan plus`
 - レジストリ一括登録のみ: `python3 scripts/push_registry.py --config accounts.json`
-- まとめてログイン（未ログインのみ）: `./scripts/login_all.sh accounts.json --device-auth`
+- まとめてログイン（未ログインのみ）: `./scripts/login_all.sh accounts.json`
 - ログ確認: `docker compose -f docker-compose.yml -f docker-compose.accounts.yml logs -f collector`
 - 特定アカウント: `docker compose -f docker-compose.yml -f docker-compose.accounts.yml logs -f agent_acc1`
 - 停止: `docker compose -f docker-compose.yml -f docker-compose.accounts.yml down`

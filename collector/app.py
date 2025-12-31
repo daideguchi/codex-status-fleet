@@ -38,10 +38,10 @@ UI_HTML = """<!doctype html>
       button:hover { background: #8883; }
       input, textarea, select { padding: 6px 10px; border-radius: 8px; border: 1px solid #8884; background: #8881; }
       textarea { width: 100%; min-height: 140px; resize: vertical; }
-      table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.25; }
-      th, td { text-align: left; padding: 6px 6px; border-bottom: 1px solid #8883; vertical-align: top; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.1; }
+      th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #8883; vertical-align: middle; white-space: nowrap; }
       th { position: sticky; top: 0; background: Canvas; z-index: 1; }
-      .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid #8884; font-size: 12px; }
+      .pill { display: inline-block; padding: 1px 6px; border-radius: 999px; border: 1px solid #8884; font-size: 12px; }
       .ok { color: #0a7; border-color: #0a74; }
       .bad { color: #d55; border-color: #d554; }
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
@@ -54,18 +54,19 @@ UI_HTML = """<!doctype html>
       .card { background: Canvas; border: 1px solid #8884; border-radius: 12px; padding: 12px; width: min(720px, 100%); }
       .card h2 { font-size: 14px; margin: 0 0 8px; }
       .small { font-size: 12px; opacity: 0.85; }
-      .limits { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-      .limit { display: flex; gap: 6px; align-items: center; padding: 3px 8px; border-radius: 999px; border: 1px solid #8883; background: #8881; }
+      .limits { display: inline-flex; flex-wrap: nowrap; gap: 6px; align-items: center; white-space: nowrap; }
+      .limit { --pct: 0; --fill: #8886; display: inline-flex; gap: 6px; align-items: center; padding: 1px 6px; border-radius: 999px; border: 1px solid #8883; background: #8881; position: relative; overflow: hidden; white-space: nowrap; }
+      .limit::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, var(--fill) calc(var(--pct) * 1%), transparent 0); opacity: 0.25; pointer-events: none; }
+      .limit > * { position: relative; }
       .limit .name { opacity: 0.85; }
-      .bar { height: 8px; width: 96px; border-radius: 999px; border: 1px solid #8884; background: #8882; overflow: hidden; }
-      .fill { height: 100%; width: 0%; border-radius: 999px; background: #8886; }
-      .fill.ok { background: #0a7; }
-      .fill.warn { background: #d9a200; }
-      .fill.bad { background: #d55; }
+      .limit.ok { --fill: #0a7; }
+      .limit.warn { --fill: #d9a200; }
+      .limit.bad { --fill: #d55; }
       .pct { font-weight: 700; }
       .pct.ok { color: #0a7; }
       .pct.warn { color: #d9a200; }
       .pct.bad { color: #d55; }
+      .tablebtn { padding: 2px 8px; border-radius: 6px; font-size: 12px; }
     </style>
   </head>
   <body>
@@ -376,10 +377,11 @@ UI_HTML = """<!doctype html>
           accountLineHtml += " " + (expectedMatch ? pill("email ok", true) : pill("email mismatch", false));
         }
 
-        let accountHtml = `<div>${accountLineHtml}</div>`;
-        if (regNote) {
-          accountHtml += `<div class="small muted">${esc(regNote)}</div>`;
-        }
+        const accountTitleParts = [];
+        if (email) accountTitleParts.push(email);
+        if (regNote) accountTitleParts.push(regNote);
+        const accountTitle = accountTitleParts.join(" · ");
+        let accountHtml = `<span title="${esc(accountTitle)}">${accountLineHtml}${regNote ? `<span class="muted"> · ${esc(regNote)}</span>` : ""}</span>`;
 
         const providerHtml = providerRaw ? `<span class="pill mono">${esc(providerRaw)}</span>` : "-";
 
@@ -392,6 +394,12 @@ UI_HTML = """<!doctype html>
         };
 
         const limitBlocks = [];
+        const shortName = (name) => {
+          if (name === "weekly") return "wk";
+          if (name === "requests") return "req";
+          if (name === "tokens") return "tok";
+          return name;
+        };
         const addLimitBlock = (name, w) => {
           if (!w || typeof w !== "object") return;
 
@@ -412,26 +420,35 @@ UI_HTML = """<!doctype html>
           const title = `${name}: ${leftText}` + (metaParts.length ? ` (${metaParts.join(" · ")})` : "");
 
           const width = leftPct === null ? 0 : leftPct;
-          limitBlocks.push(`
-            <div class="limit" title="${esc(title)}">
-              <span class="mono name">${esc(name)}</span>
-              <span class="mono pct ${cls}">${esc(leftText)}</span>
-              <div class="bar" aria-label="${esc(title)}">
-                <div class="fill ${cls}" style="width: ${width}%;"></div>
-              </div>
-            </div>
-          `);
+          limitBlocks.push(
+            `<span class="limit ${cls}" style="--pct:${width};" title="${esc(title)}">` +
+              `<span class="mono name">${esc(shortName(name))}</span>` +
+              `<span class="mono pct ${cls}">${esc(leftText)}</span>` +
+            `</span>`
+          );
         };
 
-        addLimitBlock("5h", windows["5h"]);
-        addLimitBlock("weekly", windows["weekly"]);
-        addLimitBlock("requests", windows["requests"]);
-        addLimitBlock("tokens", windows["tokens"]);
-        for (const k of Object.keys(windows || {}).sort()) {
-          if (k === "5h" || k === "weekly" || k === "requests" || k === "tokens") continue;
-          addLimitBlock(k, windows[k]);
+        const maxChips = 2;
+        const order = ["5h", "weekly", "requests", "tokens"];
+        const keys = [];
+        const seen = new Set();
+        for (const k of order) {
+          if (windows[k] && typeof windows[k] === "object") {
+            keys.push(k);
+            seen.add(k);
+          }
         }
-        const limitsHtml = limitBlocks.length ? `<div class="limits">${limitBlocks.join("")}</div>` : "-";
+        for (const k of Object.keys(windows || {}).sort()) {
+          if (seen.has(k)) continue;
+          if (windows[k] && typeof windows[k] === "object") keys.push(k);
+        }
+        const displayKeys = keys.slice(0, maxChips);
+        const extraKeys = keys.slice(maxChips);
+        for (const k of displayKeys) addLimitBlock(k, windows[k]);
+        if (extraKeys.length) {
+          limitBlocks.push(`<span class="limit" title="${esc("more: " + extraKeys.join(", "))}"><span class="mono name">+${extraKeys.length}</span></span>`);
+        }
+        const limitsHtml = limitBlocks.length ? `<span class="limits">${limitBlocks.join("")}</span>` : "-";
         const reset5hHtml = resetCell(windows["5h"]);
         const resetWeeklyHtml = resetCell(windows["weekly"]);
 
@@ -446,7 +463,7 @@ UI_HTML = """<!doctype html>
             <td class="mono nowrap">${resetWeeklyHtml}</td>
             <td class="mono">${esc(fmtTs(lastUpdate))}</td>
             <td>${state}</td>
-            <td><button data-label="${encodeURIComponent(safe(item.account_label))}">Update</button></td>
+            <td><button class="tablebtn" title="Update" aria-label="Update" data-label="${encodeURIComponent(safe(item.account_label))}">↻</button></td>
           </tr>
         `;
       }

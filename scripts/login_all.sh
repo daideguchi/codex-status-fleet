@@ -83,12 +83,19 @@ while IFS= read -r label; do
     echo "==> ${label}: already logged in (${auth_path})"
     continue
   fi
+  echo "==> ${label}: login start"
   if [[ -f "${auth_path}" && "${force}" == "true" ]]; then
     ts="$(date -u +"%Y%m%dT%H%M%SZ")"
     bak="${auth_path}.bak.${ts}"
-    mv "${auth_path}" "${bak}"
+    cp -p "${auth_path}" "${bak}"
+    rm -f "${auth_path}"
     echo "==> ${label}: force re-login (backup: ${bak})"
+    if ! ./scripts/init_account.sh "${label}" "${pass_args[@]}"; then
+      echo "==> ${label}: login failed; restoring backup (${bak})" >&2
+      cp -p "${bak}" "${auth_path}" || true
+      exit 1
+    fi
+    continue
   fi
-  echo "==> ${label}: login start"
   ./scripts/init_account.sh "${label}" "${pass_args[@]}"
 done <<< "${labels}"
