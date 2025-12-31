@@ -26,10 +26,16 @@ ACCOUNTS_DIR = os.getenv("ACCOUNTS_DIR", "/accounts")
 COLLECTOR_URL = os.getenv("COLLECTOR_URL", "http://collector:8080/ingest")
 CODEX_BIN = os.getenv("CODEX_BIN", "codex")
 RPC_TIMEOUT_SEC = float(os.getenv("RPC_TIMEOUT_SEC", "10.0"))
+HTTP_TIMEOUT_SEC = float(os.getenv("HTTP_TIMEOUT_SEC", "20.0"))
+
+ANTHROPIC_API_URL = os.getenv("ANTHROPIC_API_URL", "https://api.anthropic.com/v1/messages")
+ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01")
+ANTHROPIC_MODEL_DEFAULT = os.getenv("ANTHROPIC_MODEL_DEFAULT", "claude-3-5-haiku-latest")
 
 _JWT_RE = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 _EMAIL_FIND_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_ANTHROPIC_KEY_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
 
 app = FastAPI(title="Codex Status Refresher")
 
@@ -65,6 +71,7 @@ def _push_registry_from_config() -> None:
             {
                 "account_label": label,
                 "enabled": acc.get("enabled", True) is not False,
+                "provider": (acc.get("provider") or "codex"),
                 "expected_email": (acc.get("expected_email") or "").strip() or None,
                 "expected_planType": (
                     (acc.get("expected_planType") or acc.get("expected_plan_type") or "").strip()
@@ -157,12 +164,199 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
         return json.loads(body) if body else {}
 
 
+def _read_text_file(path: Path) -> str | None:
+    try:
+        s = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    s = s.strip()
+    return s or None
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
+def _parse_reset_header(value: str | None) -> tuple[int | None, str | None]:
+    if not value:
+        return None, None
+    v = value.strip()
+    if not v:
+        return None, None
+
+    # 1) int: could be epoch seconds, epoch ms, or seconds-until-reset.
+    try:
+        n = int(v)
+    except Exception:
+        n = None
+
+    if isinstance(n, int):
+        now_s = int(time.time())
+        if n > 1_000_000_000_000:  # epoch ms
+            epoch_s = n // 1000
+        elif n > 1_000_000_000:  # epoch seconds
+            epoch_s = n
+        else:  # seconds from now
+            epoch_s = now_s + n
+        return epoch_s, _epoch_to_iso(epoch_s)
+
+    # 2) ISO timestamp
+    try:
+        iso = v.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(iso)
+        dt_utc = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        epoch_s = int(dt_utc.timestamp())
+        return epoch_s, dt_utc.isoformat()
+    except Exception:
+        return None, None
+
+
+def _headers_to_dict(headers: Any) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        for k, v in headers.items():
+            if k and v is not None:
+                out[str(k).lower()] = str(v)
+    except Exception:
+        pass
+    return out
+
+
+def _anthropic_request_rate_limits(api_key: str, model: str) -> tuple[int, dict[str, str]]:
+    payload = {
+        "model": model,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "ping"}],
+    }
+
+    req = urllib.request.Request(
+        ANTHROPIC_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "content-type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": ANTHROPIC_VERSION,
+            "user-agent": f"{CLIENT_NAME}/{CLIENT_VERSION}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
+            # Don't store body; we only want headers for rate limit monitoring.
+            _ = resp.read()
+            return int(getattr(resp, "status", 200)), _headers_to_dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        # Even on errors, rate limit headers may still be present.
+        _ = e.read()
+        return int(getattr(e, "code", 0) or 0), _headers_to_dict(e.headers)
+
+
+def _parse_int_header(headers: dict[str, str], key: str) -> int | None:
+    v = headers.get(key)
+    if v is None:
+        return None
+    try:
+        return int(str(v).strip())
+    except Exception:
+        return None
+
+
+def _normalize_anthropic(
+    http_status: int,
+    headers: dict[str, str],
+    expected: AccountConfig,
+) -> dict[str, Any]:
+    normalized: dict[str, Any] = {"provider": "anthropic"}
+
+    if expected.expected_email:
+        normalized["expected_email"] = expected.expected_email
+        normalized["expected_email_match"] = None
+
+    if expected.expected_plan_type:
+        normalized["expected_planType"] = expected.expected_plan_type
+        normalized["expected_planType_match"] = None
+
+    # Treat missing/invalid api key as auth required.
+    if http_status in (401, 403):
+        normalized["requiresAuth"] = True
+
+    # Anthropic rate limit headers (best-effort).
+    req_limit = _parse_int_header(headers, "anthropic-ratelimit-requests-limit")
+    req_rem = _parse_int_header(headers, "anthropic-ratelimit-requests-remaining")
+    req_reset_raw = headers.get("anthropic-ratelimit-requests-reset")
+    req_reset_epoch, req_reset_iso = _parse_reset_header(req_reset_raw)
+
+    tok_limit = _parse_int_header(headers, "anthropic-ratelimit-tokens-limit")
+    tok_rem = _parse_int_header(headers, "anthropic-ratelimit-tokens-remaining")
+    tok_reset_raw = headers.get("anthropic-ratelimit-tokens-reset")
+    tok_reset_epoch, tok_reset_iso = _parse_reset_header(tok_reset_raw)
+
+    windows: dict[str, Any] = {}
+
+    if isinstance(req_limit, int) and req_limit > 0:
+        used = None
+        left = None
+        if isinstance(req_rem, int) and req_rem >= 0:
+            left = int(max(0, min(100, round((req_rem / req_limit) * 100))))
+            used = int(max(0, min(100, 100 - left)))
+        windows["requests"] = {
+            "source": "requests",
+            "limit": req_limit,
+            "remaining": req_rem,
+            "usedPercent": used,
+            "leftPercent": left,
+            "resetsAt": req_reset_epoch,
+            "resetsAtIsoUtc": req_reset_iso,
+            "resetRaw": req_reset_raw,
+        }
+
+    if isinstance(tok_limit, int) and tok_limit > 0:
+        used = None
+        left = None
+        if isinstance(tok_rem, int) and tok_rem >= 0:
+            left = int(max(0, min(100, round((tok_rem / tok_limit) * 100))))
+            used = int(max(0, min(100, 100 - left)))
+        windows["tokens"] = {
+            "source": "tokens",
+            "limit": tok_limit,
+            "remaining": tok_rem,
+            "usedPercent": used,
+            "leftPercent": left,
+            "resetsAt": tok_reset_epoch,
+            "resetsAtIsoUtc": tok_reset_iso,
+            "resetRaw": tok_reset_raw,
+        }
+
+    normalized["windows"] = windows
+    return normalized
+
+
 @dataclass(frozen=True)
 class AccountConfig:
     label: str
+    provider: str
     expected_email: str | None
     expected_plan_type: str | None
     enabled: bool
+    anthropic_model: str | None = None
+
+
+def _is_codex_provider(provider: str) -> bool:
+    p = (provider or "").strip().lower()
+    return p in ("codex", "openai_codex", "openai")
+
+
+def _is_anthropic_provider(provider: str) -> bool:
+    p = (provider or "").strip().lower()
+    return p in ("anthropic", "claude", "claude_api", "anthropic_api")
 
 
 def _load_accounts(only_label: str | None, include_disabled: bool) -> list[AccountConfig]:
@@ -183,16 +377,20 @@ def _load_accounts(only_label: str | None, include_disabled: bool) -> list[Accou
         enabled = acc.get("enabled", True) is not False
         if not enabled and not include_disabled:
             continue
+        provider = (acc.get("provider") or "codex").strip().lower()
         expected_email = (acc.get("expected_email") or "").strip() or None
         expected_plan_type = (
             (acc.get("expected_planType") or acc.get("expected_plan_type") or "").strip() or None
         )
+        anthropic_model = (acc.get("anthropic_model") or acc.get("model") or "").strip() or None
         out.append(
             AccountConfig(
                 label=label,
+                provider=provider,
                 expected_email=expected_email,
                 expected_plan_type=expected_plan_type,
                 enabled=enabled,
+                anthropic_model=anthropic_model,
             )
         )
 
@@ -222,11 +420,51 @@ def _extract_emails(text: str) -> list[str]:
     return out
 
 
+def _extract_anthropic_keys(text: str) -> list[str]:
+    found = _ANTHROPIC_KEY_RE.findall(text or "")
+    out: list[str] = []
+    seen: set[str] = set()
+    for k in found:
+        k = k.strip()
+        if not k or k in seen:
+            continue
+        out.append(k)
+        seen.add(k)
+    return out
+
+
+def _make_label_from_anthropic_key(key: str, prefix: str | None = None) -> str:
+    safe_prefix = re.sub(r"[^a-z0-9]+", "_", (prefix or "claude").strip().lower()).strip("_")
+    if not safe_prefix:
+        safe_prefix = "claude"
+    tail = key.strip().lower()[-10:]
+    safe_tail = re.sub(r"[^a-z0-9]+", "", tail).strip("_") or "key"
+    return f"{safe_prefix}_{safe_tail}"
+
+
+def _make_unique_label(base: str, existing: set[str]) -> str:
+    if base not in existing:
+        return base
+    i = 2
+    while f"{base}_{i}" in existing:
+        i += 1
+    return f"{base}_{i}"
+
+
 class AddAccountsPayload(BaseModel):
     text: str | None = None
     emails: list[str] = Field(default_factory=list)
     expected_planType: str | None = None
     enabled: bool = True
+
+
+class AddAnthropicKeysPayload(BaseModel):
+    text: str | None = None
+    keys: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    note: str | None = None
+    label_prefix: str | None = None
+    anthropic_model: str | None = None
 
 
 @app.post("/config/add_accounts")
@@ -294,6 +532,7 @@ def config_add_accounts(payload: AddAccountsPayload):
             if entry is None:
                 entry = {
                     "label": label,
+                    "provider": "codex",
                     "enabled": bool(payload.enabled),
                     "expected_email": email,
                 }
@@ -305,6 +544,9 @@ def config_add_accounts(payload: AddAccountsPayload):
                 added += 1
             else:
                 changed = False
+                if not (entry.get("provider") or "").strip():
+                    entry["provider"] = "codex"
+                    changed = True
                 if (entry.get("expected_email") or "").strip().lower() != email:
                     entry["expected_email"] = email
                     changed = True
@@ -319,6 +561,121 @@ def config_add_accounts(payload: AddAccountsPayload):
 
             account_home = Path(ACCOUNTS_DIR) / label
             (account_home / ".codex").mkdir(parents=True, exist_ok=True)
+            (account_home / ".secrets").mkdir(parents=True, exist_ok=True)
+
+        _write_json_atomic(config_path, cfg)
+
+        try:
+            _push_registry_from_config()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"failed to push registry: {e}") from e
+
+    return {"ok": True, "added": added, "updated": updated, "labels": sorted(set(labels))}
+
+
+@app.post("/config/add_anthropic_keys")
+def config_add_anthropic_keys(payload: AddAnthropicKeysPayload):
+    config_path = Path(CONFIG_PATH)
+    if not config_path.exists() or not config_path.is_file():
+        raise HTTPException(status_code=500, detail=f"config not found: {CONFIG_PATH}")
+
+    keys: list[str] = []
+    if payload.text:
+        keys.extend(_extract_anthropic_keys(payload.text))
+    for k in payload.keys or []:
+        if isinstance(k, str):
+            keys.extend(_extract_anthropic_keys(k))
+
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for k in keys:
+        if k in seen:
+            continue
+        uniq.append(k)
+        seen.add(k)
+
+    if not uniq:
+        raise HTTPException(status_code=400, detail="no anthropic api keys found")
+
+    model = (payload.anthropic_model or "").strip() or None
+    label_prefix = (payload.label_prefix or "").strip() or None
+    note = (payload.note or "").strip() or None
+
+    with _config_lock:
+        with _refresh_cond:
+            if _refresh_running:
+                ok = _refresh_cond.wait_for(
+                    lambda: not _refresh_running, timeout=REFRESH_JOIN_TIMEOUT_SEC
+                )
+                if not ok:
+                    raise HTTPException(status_code=409, detail="refresh already running")
+
+        cfg = _read_json(config_path)
+        accounts = cfg.get("accounts")
+        if not isinstance(accounts, list):
+            accounts = []
+            cfg["accounts"] = accounts
+
+        existing_labels: set[str] = set()
+        existing_by_label: dict[str, dict[str, Any]] = {}
+        for a in accounts:
+            if not isinstance(a, dict):
+                continue
+            label = (a.get("label") or "").strip()
+            if not label:
+                continue
+            existing_labels.add(label)
+            existing_by_label[label] = a
+
+        added = 0
+        updated = 0
+        labels: list[str] = []
+        for key in uniq:
+            base = _make_label_from_anthropic_key(key, prefix=label_prefix)
+            if base in existing_by_label:
+                label = base
+            else:
+                label = _make_unique_label(base, existing_labels)
+                existing_labels.add(label)
+            labels.append(label)
+
+            entry = existing_by_label.get(label)
+            if entry is None:
+                entry = {
+                    "label": label,
+                    "provider": "anthropic",
+                    "enabled": bool(payload.enabled),
+                }
+                if note:
+                    entry["note"] = note
+                if model:
+                    entry["anthropic_model"] = model
+                accounts.append(entry)
+                existing_by_label[label] = entry
+                added += 1
+            else:
+                changed = False
+                if (entry.get("provider") or "").strip().lower() != "anthropic":
+                    entry["provider"] = "anthropic"
+                    changed = True
+                if bool(entry.get("enabled", True)) != bool(payload.enabled):
+                    entry["enabled"] = bool(payload.enabled)
+                    changed = True
+                if note and (entry.get("note") or "").strip() != note:
+                    entry["note"] = note
+                    changed = True
+                if model and (entry.get("anthropic_model") or entry.get("model") or "").strip() != model:
+                    entry["anthropic_model"] = model
+                    changed = True
+                if changed:
+                    updated += 1
+
+            account_home = Path(ACCOUNTS_DIR) / label
+            (account_home / ".codex").mkdir(parents=True, exist_ok=True)
+            secrets_dir = account_home / ".secrets"
+            secrets_dir.mkdir(parents=True, exist_ok=True)
+            key_path = secrets_dir / "anthropic_api_key.txt"
+            _write_text_atomic(key_path, key.strip() + "\n")
 
         _write_json_atomic(config_path, cfg)
 
@@ -404,7 +761,7 @@ def _rpc_rate_limits(account_home: Path) -> tuple[dict[str, Any], str | None]:
 
 
 def _normalize(rate_result: dict[str, Any], expected: AccountConfig, account_email: str | None) -> dict[str, Any]:
-    normalized: dict[str, Any] = {}
+    normalized: dict[str, Any] = {"provider": "codex"}
     if account_email:
         normalized["account_email"] = account_email
 
@@ -458,10 +815,23 @@ def _normalize(rate_result: dict[str, Any], expected: AccountConfig, account_ema
     return normalized
 
 
-def _refresh_one(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
+def _post_status_event(label: str, raw: str, parsed: dict[str, Any], ts: str) -> dict[str, Any]:
+    payload = {
+        "account_label": label,
+        "host": socket.gethostname(),
+        "raw": raw,
+        "parsed": parsed,
+        "ts": ts,
+    }
+    _post_json(COLLECTOR_URL, payload)
+    return payload
+
+
+def _refresh_one_codex(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
     account_home = Path(ACCOUNTS_DIR) / acc.label
     account_home.mkdir(parents=True, exist_ok=True)
     (account_home / ".codex").mkdir(parents=True, exist_ok=True)
+    (account_home / ".secrets").mkdir(parents=True, exist_ok=True)
     auth_path = account_home / ".codex" / "auth.json"
     account_email = _extract_account_email_from_auth(auth_path) if auth_path.is_file() else None
 
@@ -494,6 +864,7 @@ def _refresh_one(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
             "error": str(e),
             "error_payload": error_payload,
             "normalized": {
+                "provider": "codex",
                 "account_email": account_email,
                 "expected_email": acc.expected_email,
                 "expected_email_match": (
@@ -502,20 +873,129 @@ def _refresh_one(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
                     else None
                 ),
                 "expected_planType": acc.expected_plan_type,
+                "requiresAuth": requires_auth,
                 "requiresOpenaiAuth": requires_auth,
             },
         }
         state = "auth required" if requires_auth else "error"
 
-    payload = {
-        "account_label": acc.label,
-        "host": socket.gethostname(),
-        "raw": raw,
-        "parsed": parsed,
-        "ts": ts,
-    }
-    _post_json(COLLECTOR_URL, payload)
+    payload = _post_status_event(acc.label, raw, parsed, ts)
     return state, payload
+
+
+def _refresh_one_anthropic(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
+    account_home = Path(ACCOUNTS_DIR) / acc.label
+    account_home.mkdir(parents=True, exist_ok=True)
+    (account_home / ".codex").mkdir(parents=True, exist_ok=True)
+    secrets_dir = account_home / ".secrets"
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = _now_iso()
+
+    key_path = secrets_dir / "anthropic_api_key.txt"
+    key_text = _read_text_file(key_path) if key_path.is_file() else None
+    api_key: str | None = None
+    if key_text:
+        m = _ANTHROPIC_KEY_RE.search(key_text)
+        if m:
+            api_key = m.group(0)
+
+    model = acc.anthropic_model or ANTHROPIC_MODEL_DEFAULT
+
+    if not api_key:
+        raw = "[auth_required] missing anthropic_api_key.txt"
+        parsed = {
+            "probe_error": True,
+            "error_type": "AuthRequired",
+            "error": f"missing API key: {key_path}",
+            "normalized": {
+                "provider": "anthropic",
+                "requiresAuth": True,
+                "expected_email": acc.expected_email,
+                "expected_email_match": None,
+                "expected_planType": acc.expected_plan_type,
+                "expected_planType_match": None,
+                "windows": {},
+            },
+        }
+        payload = _post_status_event(acc.label, raw, parsed, ts)
+        return "auth required", payload
+
+    try:
+        http_status, headers = _anthropic_request_rate_limits(api_key, model=model)
+        headers_filtered = {
+            k: v
+            for (k, v) in headers.items()
+            if k.startswith("anthropic-ratelimit-") or k in ("retry-after", "date", "request-id")
+        }
+        normalized = _normalize_anthropic(http_status=http_status, headers=headers, expected=acc)
+        normalized["model"] = model
+
+        raw = json.dumps(
+            {"http_status": http_status, "model": model, "headers": headers_filtered},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        parsed = {
+            "http_status": http_status,
+            "model": model,
+            "headers": headers_filtered,
+            "normalized": normalized,
+        }
+
+        if normalized.get("requiresAuth"):
+            state = "auth required"
+        elif normalized.get("windows"):
+            state = "ok"
+        else:
+            state = "error"
+    except Exception as e:
+        raw = f"[probe_error] {type(e).__name__}: {e}"
+        parsed = {
+            "probe_error": True,
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "normalized": {
+                "provider": "anthropic",
+                "requiresAuth": False,
+                "expected_email": acc.expected_email,
+                "expected_email_match": None,
+                "expected_planType": acc.expected_plan_type,
+                "expected_planType_match": None,
+                "windows": {},
+                "model": model,
+            },
+        }
+        state = "error"
+
+    payload = _post_status_event(acc.label, raw, parsed, ts)
+    return state, payload
+
+
+def _refresh_one(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
+    if _is_codex_provider(acc.provider):
+        return _refresh_one_codex(acc)
+    if _is_anthropic_provider(acc.provider):
+        return _refresh_one_anthropic(acc)
+
+    ts = _now_iso()
+    raw = f"[probe_error] unknown provider: {acc.provider}"
+    parsed = {
+        "probe_error": True,
+        "error_type": "UnknownProvider",
+        "error": f"unknown provider: {acc.provider}",
+        "normalized": {
+            "provider": acc.provider,
+            "requiresAuth": False,
+            "expected_email": acc.expected_email,
+            "expected_email_match": None,
+            "expected_planType": acc.expected_plan_type,
+            "expected_planType_match": None,
+            "windows": {},
+        },
+    }
+    payload = _post_status_event(acc.label, raw, parsed, ts)
+    return "error", payload
 
 
 @app.get("/healthz")

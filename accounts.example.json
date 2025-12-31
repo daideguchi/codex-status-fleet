@@ -5,8 +5,9 @@
   "poll_interval_sec": 60,
   "codex_cli_version": "0.77.0",
   "accounts": [
-    { "label": "acc_user_example_com", "enabled": true, "expected_email": "user@example.com", "expected_planType": "plus" },
-    { "label": "acc2", "enabled": false, "note": "解約済みなど（生成から除外）" }
+    { "label": "acc_user_example_com", "provider": "codex", "enabled": true, "expected_email": "user@example.com", "expected_planType": "plus" },
+    { "label": "claude_key_abcdef", "provider": "anthropic", "enabled": true, "note": "Anthropic API key", "anthropic_model": "claude-3-5-haiku-latest" },
+    { "label": "acc2", "provider": "codex", "enabled": false, "note": "解約済みなど（生成から除外）" }
   ],
   "agent": {
     "rpc_timeout_sec": 10.0

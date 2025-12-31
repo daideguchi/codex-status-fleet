@@ -163,6 +163,7 @@ def main() -> int:
     if args.config and args.expected_email:
         account_entry: dict[str, Any] = {
             "label": label,
+            "provider": "codex",
             "enabled": True,
             "expected_email": args.expected_email,
         }

@@ -35,13 +35,18 @@ def _generate(config: dict[str, Any]) -> str:
     lines.append("services:")
 
     for account in accounts:
-        label = (account.get("label") or "").strip()
-        if not label:
-            raise SystemExit("Each account needs a non-empty 'label'")
-
         enabled = account.get("enabled", True)
         if enabled is False:
             continue
+
+        provider = str(account.get("provider", "codex")).strip().lower()
+        if provider not in ("codex", "openai_codex", "openai"):
+            # Non-Codex providers are not supported by the polling agent.
+            continue
+
+        label = (account.get("label") or "").strip()
+        if not label:
+            raise SystemExit("Each account needs a non-empty 'label'")
 
         expected_email = (account.get("expected_email") or "").strip()
         expected_plan_type = (account.get("expected_planType") or "").strip()

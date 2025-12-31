@@ -85,21 +85,41 @@ def main() -> int:
         label = (acc.get("label") or "").strip()
         if not label:
             continue
+        provider = (acc.get("provider") or "codex").strip().lower()
 
-        auth_path = os.path.join(accounts_root, label, ".codex", "auth.json")
         expected_email = (acc.get("expected_email") or "").strip().lower() or None
-        actual_email = _extract_email_from_auth_json(auth_path) if os.path.isfile(auth_path) else None
-        rows.append(
-            {
-                "label": label,
-                "enabled": acc.get("enabled", True) is not False,
-                "expected_email": expected_email,
-                "actual_email": actual_email,
-                "expected_email_match": (actual_email == expected_email) if (actual_email and expected_email) else None,
-                "logged_in": os.path.isfile(auth_path),
-                "auth_mtime_utc": _fmt_mtime(auth_path) if os.path.isfile(auth_path) else None,
-            }
-        )
+        row: dict[str, Any] = {
+            "label": label,
+            "provider": provider,
+            "enabled": acc.get("enabled", True) is not False,
+            "expected_email": expected_email,
+        }
+
+        if provider in ("codex", "openai_codex", "openai"):
+            auth_path = os.path.join(accounts_root, label, ".codex", "auth.json")
+            actual_email = _extract_email_from_auth_json(auth_path) if os.path.isfile(auth_path) else None
+            row.update(
+                {
+                    "actual_email": actual_email,
+                    "expected_email_match": (actual_email == expected_email)
+                    if (actual_email and expected_email)
+                    else None,
+                    "logged_in": os.path.isfile(auth_path),
+                    "auth_mtime_utc": _fmt_mtime(auth_path) if os.path.isfile(auth_path) else None,
+                }
+            )
+        elif provider in ("anthropic", "claude", "claude_api"):
+            key_path = os.path.join(accounts_root, label, ".secrets", "anthropic_api_key.txt")
+            row.update(
+                {
+                    "has_api_key": os.path.isfile(key_path),
+                    "api_key_mtime_utc": _fmt_mtime(key_path) if os.path.isfile(key_path) else None,
+                }
+            )
+        else:
+            row["note"] = "unknown provider"
+
+        rows.append(row)
 
     print(json.dumps({"items": rows}, ensure_ascii=False, indent=2))
     return 0

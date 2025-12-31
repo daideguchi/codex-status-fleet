@@ -64,6 +64,7 @@ def _parse_accounts(text: str, ignore_canceled: bool) -> list[dict[str, Any]]:
         if entry is None:
             entry = {
                 "label": _make_label(email),
+                "provider": "codex",
                 "enabled": not canceled_next,
                 "expected_email": email,
             }

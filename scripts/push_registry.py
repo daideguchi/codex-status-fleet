@@ -44,6 +44,7 @@ def _build_registry_payload(config: dict[str, Any]) -> dict[str, Any]:
             {
                 "account_label": label,
                 "enabled": acc.get("enabled", True) is not False,
+                "provider": (acc.get("provider") or "codex"),
                 "expected_email": acc.get("expected_email"),
                 "expected_planType": acc.get("expected_planType") or acc.get("expected_plan_type"),
                 "note": acc.get("note"),

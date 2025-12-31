@@ -101,7 +101,7 @@ def main() -> int:
 
         entry = existing_by_email.get(email_lc) or existing_by_label.get(label)
         if entry is None:
-            entry = {"label": label, "enabled": True, "expected_email": email_lc}
+            entry = {"label": label, "provider": "codex", "enabled": True, "expected_email": email_lc}
             if expected_plan:
                 entry["expected_planType"] = expected_plan
             accounts.append(entry)
@@ -110,6 +110,9 @@ def main() -> int:
             added += 1
         else:
             changed = False
+            if not (entry.get("provider") or "").strip():
+                entry["provider"] = "codex"
+                changed = True
             if not (entry.get("label") or "").strip():
                 entry["label"] = label
                 changed = True
@@ -132,4 +135,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

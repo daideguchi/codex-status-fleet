@@ -34,7 +34,9 @@ def main() -> int:
         # Always create dirs even if disabled, so login can be done later.
         acc_home = os.path.join(accounts_root, label)
         codex_dir = os.path.join(acc_home, ".codex")
+        secrets_dir = os.path.join(acc_home, ".secrets")
         os.makedirs(codex_dir, exist_ok=True)
+        os.makedirs(secrets_dir, exist_ok=True)
         created += 1
 
     print(f"ok: created/ensured {created} account dirs under {accounts_root}")
@@ -43,4 +45,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

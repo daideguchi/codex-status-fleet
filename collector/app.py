@@ -63,7 +63,8 @@ UI_HTML = """<!doctype html>
     <div class="toolbar">
       <button id="refresh">Update now</button>
       <button id="add">Add accounts</button>
-      <label class="muted">Filter <input id="filter" placeholder="label / email" /></label>
+      <button id="addKeys">Add Claude keys</button>
+      <label class="muted">Filter <input id="filter" placeholder="label / email / provider" /></label>
       <span id="summary" class="muted"></span>
       <span id="status" class="muted"></span>
     </div>
@@ -71,12 +72,10 @@ UI_HTML = """<!doctype html>
       <thead>
         <tr>
           <th>Label</th>
-          <th>Account</th>
-          <th>Plan</th>
-          <th class="right">5h left</th>
-          <th>5h resets</th>
-          <th class="right">Weekly left</th>
-          <th>Weekly resets</th>
+          <th>Provider</th>
+          <th>Account / Note</th>
+          <th>Plan / Model</th>
+          <th>Limits</th>
           <th>Last update</th>
           <th>State</th>
           <th>Action</th>
@@ -115,6 +114,32 @@ UI_HTML = """<!doctype html>
         </div>
       </div>
     </div>
+    <div id="keysModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
+      <div class="card">
+        <div class="row" style="justify-content: space-between;">
+          <h2>Add Claude (Anthropic) keys</h2>
+          <button id="keysClose">Close</button>
+        </div>
+        <div class="small">Paste Anthropic API keys (sk-ant-...). Keys are stored under accounts/&lt;label&gt;/.secrets/anthropic_api_key.txt.</div>
+        <div style="height: 8px"></div>
+        <textarea id="keysText" placeholder="sk-ant-..."></textarea>
+        <div style="height: 8px"></div>
+        <div class="row">
+          <label class="muted">Label prefix <input id="keysPrefix" value="claude" /></label>
+          <label class="muted">Model <input id="keysModel" placeholder="claude-3-5-haiku-latest" /></label>
+          <label class="muted">Note <input id="keysNote" placeholder="team /用途" /></label>
+          <label class="muted"><input id="keysEnabled" type="checkbox" checked /> enabled</label>
+          <span id="keysFound" class="small"></span>
+        </div>
+        <div style="height: 8px"></div>
+        <pre id="keysPreview" class="mono small" style="white-space: pre-wrap; margin: 0;"></pre>
+        <div style="height: 10px"></div>
+        <div class="row" style="justify-content: flex-end;">
+          <button id="keysCancel">Cancel</button>
+          <button id="keysSubmit">Add</button>
+        </div>
+      </div>
+    </div>
     <script>
       const $ = (id) => document.getElementById(id);
       const rowsEl = $("rows");
@@ -122,6 +147,7 @@ UI_HTML = """<!doctype html>
       const summaryEl = $("summary");
       const refreshBtn = $("refresh");
       const addBtn = $("add");
+      const addKeysBtn = $("addKeys");
       const filterEl = $("filter");
       const addModal = $("addModal");
       const addClose = $("addClose");
@@ -132,6 +158,17 @@ UI_HTML = """<!doctype html>
       const addEnabled = $("addEnabled");
       const addFound = $("addFound");
       const addPreview = $("addPreview");
+      const keysModal = $("keysModal");
+      const keysClose = $("keysClose");
+      const keysCancel = $("keysCancel");
+      const keysSubmit = $("keysSubmit");
+      const keysText = $("keysText");
+      const keysPrefix = $("keysPrefix");
+      const keysModel = $("keysModel");
+      const keysNote = $("keysNote");
+      const keysEnabled = $("keysEnabled");
+      const keysFound = $("keysFound");
+      const keysPreview = $("keysPreview");
       let cachedItems = [];
       let lastUpdateText = "";
       let refreshing = false;
@@ -149,9 +186,19 @@ UI_HTML = """<!doctype html>
         if (v === null || v === undefined || v === "") return fallback;
         return String(v);
       }
+      function esc(v) {
+        return String(v).replace(/[&<>"']/g, (c) => {
+          if (c === "&") return "&amp;";
+          if (c === "<") return "&lt;";
+          if (c === ">") return "&gt;";
+          if (c === "\"") return "&quot;";
+          if (c === "'") return "&#39;";
+          return c;
+        });
+      }
       function pill(text, ok) {
         const cls = ok ? "pill ok" : "pill bad";
-        return `<span class="${cls}">${text}</span>`;
+        return `<span class="${cls}">${esc(text)}</span>`;
       }
 
       function setModalOpen(open) {
@@ -163,6 +210,18 @@ UI_HTML = """<!doctype html>
         } else {
           addModal.classList.remove("open");
           addModal.setAttribute("aria-hidden", "true");
+        }
+      }
+
+      function setKeysModalOpen(open) {
+        if (open) {
+          keysModal.classList.add("open");
+          keysModal.setAttribute("aria-hidden", "false");
+          renderKeysPreview();
+          try { keysText.focus(); } catch {}
+        } else {
+          keysModal.classList.remove("open");
+          keysModal.setAttribute("aria-hidden", "true");
         }
       }
 
@@ -180,10 +239,37 @@ UI_HTML = """<!doctype html>
         return out;
       }
 
+      function extractAnthropicKeys(text) {
+        const re = /sk-ant-[A-Za-z0-9_-]+/g;
+        const m = (text || "").match(re) || [];
+        const out = [];
+        const seen = new Set();
+        for (const raw of m) {
+          const k = String(raw).trim();
+          if (!k || seen.has(k)) continue;
+          seen.add(k);
+          out.push(k);
+        }
+        return out;
+      }
+
+      function maskKey(k) {
+        const s = String(k || "").trim();
+        if (!s) return "";
+        if (s.length <= 18) return s;
+        return s.slice(0, 10) + "…" + s.slice(-6);
+      }
+
       function renderAddPreview() {
         const emails = extractEmails(addText.value || "");
         addFound.textContent = emails.length ? `Found ${emails.length}` : "Found 0";
         addPreview.textContent = emails.slice(0, 200).join("\\n");
+      }
+
+      function renderKeysPreview() {
+        const keys = extractAnthropicKeys(keysText.value || "");
+        keysFound.textContent = keys.length ? `Found ${keys.length}` : "Found 0";
+        keysPreview.textContent = keys.slice(0, 200).map(maskKey).join("\\n");
       }
 
       function classify(item) {
@@ -195,7 +281,8 @@ UI_HTML = """<!doctype html>
         if (reg && reg.enabled === false) return "disabled";
         if (!lastUpdate) return "pending";
         if (!parsed) return "no_parsed";
-        if (norm.requiresOpenaiAuth) return "auth_required";
+        const requiresAuth = (norm.requiresAuth === true) || (norm.requiresOpenaiAuth === true);
+        if (requiresAuth) return "auth_required";
         if (parsed.probe_error) return "probe_error";
         return "ok";
       }
@@ -205,20 +292,23 @@ UI_HTML = """<!doctype html>
         const norm = (parsed && parsed.normalized) ? parsed.normalized : {};
         const reg = item.registry || null;
         const windows = norm.windows || {};
-        const five = windows["5h"] || {};
-        const weekly = windows["weekly"] || {};
 
+        const regProvider = reg ? (reg.provider || "") : "";
         const regEmail = reg ? (reg.expected_email || "") : "";
         const regPlan = reg ? (reg.expected_planType || "") : "";
+        const regNote = reg ? (reg.note || "") : "";
 
         const email = norm.account_email || norm.expected_email || regEmail || "";
         const plan = norm.account_planType || norm.rate_planType || norm.expected_planType || regPlan || "";
+        const model = (parsed && parsed.model) || norm.model || "";
         const lastUpdate = item.ts || "";
 
-        const fiveLeft = five.leftPercent;
-        const fiveReset = five.resetsAtIsoUtc;
-        const weeklyLeft = weekly.leftPercent;
-        const weeklyReset = weekly.resetsAtIsoUtc;
+        const providerRaw = (regProvider || norm.provider || "").trim();
+        const provider = providerRaw || "-";
+        const providerLc = providerRaw.toLowerCase();
+
+        const isAnthropic = providerLc.startsWith("anthropic") || providerLc.startsWith("claude");
+        const planOrModel = isAnthropic ? safe(model) : safe(plan);
 
         let state = "";
         const cls = classify(item);
@@ -230,23 +320,54 @@ UI_HTML = """<!doctype html>
         else state = pill("ok", true);
 
         const expectedMatch = norm.expected_email_match;
-        let accountCol = safe(email, "(unknown)");
+        let accountLineHtml = esc(safe(email, isAnthropic ? "(api key)" : "(unknown)"));
         if (!norm.account_email && (norm.expected_email || regEmail)) {
-          accountCol += " " + pill("expected", true);
+          accountLineHtml += " " + pill("expected", true);
         } else if (typeof expectedMatch === "boolean") {
-          accountCol += " " + (expectedMatch ? pill("email ok", true) : pill("email mismatch", false));
+          accountLineHtml += " " + (expectedMatch ? pill("email ok", true) : pill("email mismatch", false));
         }
+
+        let accountHtml = `<div>${accountLineHtml}</div>`;
+        if (regNote) {
+          accountHtml += `<div class="small muted">${esc(regNote)}</div>`;
+        }
+
+        const providerHtml = providerRaw ? `<span class="pill mono">${esc(providerRaw)}</span>` : "-";
+
+        const limitLines = [];
+        const addLimit = (name, w) => {
+          if (!w || typeof w !== "object") return;
+          const left = fmtPct(w.leftPercent);
+          const reset = fmtTs(w.resetsAtIsoUtc);
+          let counts = "";
+          if (w.remaining !== null && w.remaining !== undefined && w.limit !== null && w.limit !== undefined) {
+            counts = ` ${w.remaining}/${w.limit}`;
+          }
+          const parts = [name + ":", left];
+          if (counts) parts.push(counts.trim());
+          if (reset !== "-" && reset !== "") parts.push("resets", reset);
+          limitLines.push(parts.join(" "));
+        };
+
+        addLimit("5h", windows["5h"]);
+        addLimit("weekly", windows["weekly"]);
+        addLimit("requests", windows["requests"]);
+        addLimit("tokens", windows["tokens"]);
+        for (const k of Object.keys(windows || {})) {
+          if (k === "5h" || k === "weekly" || k === "requests" || k === "tokens") continue;
+          addLimit(k, windows[k]);
+        }
+        const limitsText = limitLines.length ? limitLines.join("\\n") : "-";
+        const limitsHtml = `<pre class="mono small" style="margin:0; white-space: pre-wrap;">${esc(limitsText)}</pre>`;
 
         return `
           <tr>
-            <td class="mono"><a class="mono" href="/latest/${encodeURIComponent(safe(item.account_label))}">${safe(item.account_label)}</a></td>
-            <td>${accountCol}</td>
-            <td>${safe(plan)}</td>
-            <td class="right mono">${fmtPct(fiveLeft)}</td>
-            <td class="mono">${fmtTs(fiveReset)}</td>
-            <td class="right mono">${fmtPct(weeklyLeft)}</td>
-            <td class="mono">${fmtTs(weeklyReset)}</td>
-            <td class="mono">${fmtTs(lastUpdate)}</td>
+            <td class="mono"><a class="mono" href="/latest/${encodeURIComponent(safe(item.account_label))}">${esc(safe(item.account_label))}</a></td>
+            <td>${providerHtml}</td>
+            <td>${accountHtml}</td>
+            <td class="mono">${esc(planOrModel)}</td>
+            <td>${limitsHtml}</td>
+            <td class="mono">${esc(fmtTs(lastUpdate))}</td>
             <td>${state}</td>
             <td><button data-label="${encodeURIComponent(safe(item.account_label))}">Update</button></td>
           </tr>
@@ -263,8 +384,17 @@ UI_HTML = """<!doctype html>
               const norm = parsed.normalized || {};
               const reg = it.registry || {};
               const email = (norm.account_email || norm.expected_email || reg.expected_email || "").toLowerCase();
+              const provider = (reg.provider || norm.provider || "").toLowerCase();
+              const note = (reg.note || "").toLowerCase();
+              const model = (parsed.model || norm.model || "").toLowerCase();
               const label = (it.account_label || "").toLowerCase();
-              return label.includes(q) || email.includes(q);
+              return (
+                label.includes(q) ||
+                email.includes(q) ||
+                provider.includes(q) ||
+                note.includes(q) ||
+                model.includes(q)
+              );
             })
           : items;
 
@@ -347,13 +477,63 @@ UI_HTML = """<!doctype html>
         }
       }
 
+      async function addClaudeKeys() {
+        const keys = extractAnthropicKeys(keysText.value || "");
+        if (!keys.length) {
+          keysFound.textContent = "Found 0 (paste sk-ant-... first)";
+          return;
+        }
+
+        keysSubmit.disabled = true;
+        keysCancel.disabled = true;
+        keysClose.disabled = true;
+        statusEl.textContent = "Adding Claude keys...";
+        try {
+          const payload = {
+            text: keysText.value,
+            enabled: !!keysEnabled.checked,
+            label_prefix: (keysPrefix.value || "").trim() || null,
+            note: (keysNote.value || "").trim() || null,
+            anthropic_model: (keysModel.value || "").trim() || null,
+          };
+          const res = await fetch("/anthropic/add_keys", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          let body = null;
+          try { body = await res.json(); } catch {}
+          if (!res.ok) {
+            const msg = (body && (body.detail || body.error)) ? (body.detail || body.error) : `HTTP ${res.status}`;
+            throw new Error(msg);
+          }
+
+          setKeysModalOpen(false);
+          keysText.value = "";
+          keysNote.value = "";
+          renderKeysPreview();
+
+          await loadLatest();
+          const added = body && typeof body.added === "number" ? body.added : 0;
+          const updated = body && typeof body.updated === "number" ? body.updated : 0;
+          lastUpdateText = `Claude keys updated — added:${added} updated:${updated}`;
+          renderFromCache();
+        } catch (e) {
+          statusEl.textContent = `Add error: ${e}`;
+        } finally {
+          keysSubmit.disabled = false;
+          keysCancel.disabled = false;
+          keysClose.disabled = false;
+        }
+      }
+
       async function updateNow(label=null) {
         if (refreshing) return;
         refreshing = true;
         refreshBtn.disabled = true;
 
         const started = Date.now();
-        statusEl.textContent = "Refreshing (fetching from Codex)...";
+        statusEl.textContent = "Refreshing (fetching latest limits)...";
         try {
           const url = label ? (`/refresh?label=${encodeURIComponent(label)}`) : "/refresh";
           const res = await fetch(url, { method: "POST" });
@@ -393,7 +573,8 @@ UI_HTML = """<!doctype html>
       }
 
       refreshBtn.addEventListener("click", updateNow);
-      addBtn.addEventListener("click", () => setModalOpen(true));
+      addBtn.addEventListener("click", () => { setKeysModalOpen(false); setModalOpen(true); });
+      addKeysBtn.addEventListener("click", () => { setModalOpen(false); setKeysModalOpen(true); });
       addClose.addEventListener("click", () => setModalOpen(false));
       addCancel.addEventListener("click", () => setModalOpen(false));
       addSubmit.addEventListener("click", addAccounts);
@@ -401,8 +582,17 @@ UI_HTML = """<!doctype html>
       addModal.addEventListener("click", (ev) => {
         if (ev.target === addModal) setModalOpen(false);
       });
+      keysClose.addEventListener("click", () => setKeysModalOpen(false));
+      keysCancel.addEventListener("click", () => setKeysModalOpen(false));
+      keysSubmit.addEventListener("click", addClaudeKeys);
+      keysText.addEventListener("input", renderKeysPreview);
+      keysModal.addEventListener("click", (ev) => {
+        if (ev.target === keysModal) setKeysModalOpen(false);
+      });
       document.addEventListener("keydown", (ev) => {
-        if (ev.key === "Escape" && addModal.classList.contains("open")) setModalOpen(false);
+        if (ev.key !== "Escape") return;
+        if (addModal.classList.contains("open")) setModalOpen(false);
+        if (keysModal.classList.contains("open")) setKeysModalOpen(false);
       });
       filterEl.addEventListener("input", renderFromCache);
       rowsEl.addEventListener("click", (ev) => {
@@ -448,6 +638,7 @@ def _init_db() -> None:
             CREATE TABLE IF NOT EXISTS accounts_registry (
               account_label TEXT PRIMARY KEY,
               enabled INTEGER NOT NULL DEFAULT 1,
+              provider TEXT,
               expected_email TEXT,
               expected_plan_type TEXT,
               note TEXT,
@@ -459,6 +650,10 @@ def _init_db() -> None:
         con.execute(
             "CREATE INDEX IF NOT EXISTS idx_status_events_account_ts ON status_events(account_label, ts)"
         )
+        # Lightweight migrations for existing DBs.
+        cols = [r[1] for r in con.execute("PRAGMA table_info(accounts_registry)").fetchall()]
+        if "provider" not in cols:
+            con.execute("ALTER TABLE accounts_registry ADD COLUMN provider TEXT")
         con.commit()
 
 
@@ -476,6 +671,7 @@ class StatusPayload(BaseModel):
 class RegistryItem(BaseModel):
     account_label: str = Field(min_length=1, max_length=200)
     enabled: bool = True
+    provider: str | None = None
     expected_email: str | None = None
     expected_planType: str | None = None
     note: str | None = None
@@ -490,6 +686,15 @@ class AddAccountsPayload(BaseModel):
     emails: list[str] = Field(default_factory=list)
     expected_planType: str | None = None
     enabled: bool = True
+
+
+class AddAnthropicKeysPayload(BaseModel):
+    text: str | None = None
+    keys: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    note: str | None = None
+    label_prefix: str | None = None
+    anthropic_model: str | None = None
 
 
 @app.get("/healthz")
@@ -561,6 +766,35 @@ def accounts_add(payload: AddAccountsPayload):
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
+
+@app.post("/anthropic/add_keys")
+def anthropic_add_keys(payload: AddAnthropicKeysPayload):
+    if not REFRESHER_BASE_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    url = f"{REFRESHER_BASE_URL}/config/add_anthropic_keys"
+    data = json.dumps(payload.model_dump(), ensure_ascii=False).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {"ok": True}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except Exception:
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) else body
+        raise HTTPException(status_code=e.code, detail=detail)
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
 def _ensure_registry_account(account_label: str) -> None:
     now = _now_iso()
     with sqlite3.connect(DB_PATH) as con:
@@ -593,11 +827,12 @@ def _upsert_registry_item(item: RegistryItem) -> None:
         con.execute(
             """
             INSERT INTO accounts_registry(
-              account_label, enabled, expected_email, expected_plan_type, note, created_at, updated_at
+              account_label, enabled, provider, expected_email, expected_plan_type, note, created_at, updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_label) DO UPDATE SET
               enabled = excluded.enabled,
+              provider = excluded.provider,
               expected_email = excluded.expected_email,
               expected_plan_type = excluded.expected_plan_type,
               note = excluded.note,
@@ -606,6 +841,7 @@ def _upsert_registry_item(item: RegistryItem) -> None:
             (
                 item.account_label,
                 1 if item.enabled else 0,
+                item.provider,
                 item.expected_email,
                 expected_plan_type,
                 item.note,
@@ -617,10 +853,11 @@ def _upsert_registry_item(item: RegistryItem) -> None:
 
 
 def _registry_row_to_item(row: tuple) -> dict:
-    account_label, enabled, expected_email, expected_plan_type, note, created_at, updated_at = row
+    account_label, enabled, provider, expected_email, expected_plan_type, note, created_at, updated_at = row
     return {
         "account_label": account_label,
         "enabled": bool(enabled),
+        "provider": provider,
         "expected_email": expected_email,
         "expected_planType": expected_plan_type,
         "note": note,
@@ -634,7 +871,7 @@ def registry_list():
     with sqlite3.connect(DB_PATH) as con:
         rows = con.execute(
             """
-            SELECT account_label, enabled, expected_email, expected_plan_type, note, created_at, updated_at
+            SELECT account_label, enabled, provider, expected_email, expected_plan_type, note, created_at, updated_at
             FROM accounts_registry
             ORDER BY account_label ASC
             """
@@ -714,7 +951,7 @@ def latest(include_orphans: bool = False):
         event_rows = con.execute(latest_query).fetchall()
         registry_rows = con.execute(
             """
-            SELECT account_label, enabled, expected_email, expected_plan_type, note, created_at, updated_at
+            SELECT account_label, enabled, provider, expected_email, expected_plan_type, note, created_at, updated_at
             FROM accounts_registry
             ORDER BY account_label ASC
             """
@@ -762,7 +999,7 @@ def latest_account(account_label: str):
     with sqlite3.connect(DB_PATH) as con:
         reg_row = con.execute(
             """
-            SELECT account_label, enabled, expected_email, expected_plan_type, note, created_at, updated_at
+            SELECT account_label, enabled, provider, expected_email, expected_plan_type, note, created_at, updated_at
             FROM accounts_registry
             WHERE account_label = ?
             LIMIT 1

@@ -1,6 +1,9 @@
 # Codex Status Fleet
 
-ChatGPT サブスクの **複数 Codex アカウント**について、`codex app-server` の JSON-RPC（`account/rateLimits/read`）を定期取得して、中央の Collector に集約するための最小構成です。
+複数の **Codex（ChatGPT サブスク）アカウント** と **Claude（Anthropic API キー）** のレートリミットを、ローカルの Collector に集約して一覧表示するための最小構成です。
+
+- Codex: `codex app-server` の JSON-RPC（`account/rateLimits/read`）
+- Claude: Anthropic API への最小リクエストで rate limit ヘッダを取得（キーはローカルに保存）
 
 端末 UI（`/status`）のスクレイピングではなく、**構造化された rate limit 情報**（`usedPercent` / `resetsAt` / `windowDurationMins` など）をそのまま保存します。
 
@@ -8,12 +11,14 @@ ChatGPT サブスクの **複数 Codex アカウント**について、`codex ap
 
 - `usedPercent` は「使用率」で、Codex の UI が出す「xx% left」は `100 - usedPercent` です
 - `windowDurationMins=300` が 5h、`windowDurationMins=10080` が weekly です（`parsed.normalized.windows["5h"]` / `["weekly"]`）
+- Claude（Anthropic API）は `parsed.normalized.windows["requests"]` / `["tokens"]` に `limit` / `remaining` / `resetsAtIsoUtc` を入れます
 
 ## できること
 
 - アカウントごとに認証情報 (`~/.codex`) を分離して保持
 - エージェントが `codex app-server` から `account/rateLimits/read` を取得
 - 取得結果を Collector に POST → SQLite に保存
+- Anthropic（Claude API）も同じ一覧で確認（`anthropic-ratelimit-*` ヘッダ）
 - アカウントレジストリ（`accounts.json` → Collector に一括登録）で、未取得でも一覧に表示
 - 最新状態の取得 API
   - `GET /healthz`
@@ -26,6 +31,7 @@ ChatGPT サブスクの **複数 Codex アカウント**について、`codex ap
 
 - macOS + Docker Desktop（または Linux）
 - ホスト側に `codex` が入っていること（ログイン用）
+- Claude を使う場合: Anthropic API キー（`sk-ant-...`）
 
 ## セットアップ（ホストでログイン → コンテナで監視）
 
@@ -55,6 +61,8 @@ cp accounts.example.json accounts.json
 ./scripts/init_account.sh acc1
 ./scripts/init_account.sh acc2
 ```
+
+注意: ふつうに `codex login` を実行すると `~/.codex` に保存されます。Fleet が参照するのは **`accounts/<label>/.codex/`** なので、上の `init_account.sh` を使う（または下の capture を使う）必要があります。
 
 すでに `~/.codex` にログイン済みのアカウントがある場合（今ログインしたアカウントを保存したい）:
 
@@ -121,6 +129,9 @@ curl -s http://localhost:8080/latest | python3 -m json.tool
 
 - `http://localhost:8080/` → **Add accounts**  
   - メール（1行1件）または `/status` の貼り付けを入れると email を自動抽出して `accounts.json` に追記します
+- `http://localhost:8080/` → **Add Claude keys**  
+  - `sk-ant-...` を貼り付けると `accounts.json` に `provider: "anthropic"` を追加し、キーを `accounts/<label>/.secrets/anthropic_api_key.txt` に保存します（ログイン不要）
+  - 取得時は Anthropic API に最小リクエスト（`max_tokens=1`）を送ってヘッダを読むため、少量ですがリクエスト/トークンを消費します
 
 （CLI で追加したい場合）
 
@@ -128,7 +139,7 @@ curl -s http://localhost:8080/latest | python3 -m json.tool
 python3 scripts/add_accounts.py --config accounts.json --in emails.txt --plan plus
 ```
 
-2) まとめてログイン（未ログインだけ）
+2) まとめてログイン（未ログインだけ / Codex のみ）
 
 ```bash
 ./scripts/login_all.sh accounts.json --device-auth
