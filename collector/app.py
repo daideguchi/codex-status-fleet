@@ -56,13 +56,13 @@ UI_HTML = """<!doctype html>
       .small { font-size: 12px; opacity: 0.85; }
       .limits { display: inline-flex; flex-wrap: nowrap; gap: 6px; align-items: center; white-space: nowrap; }
       .limit { --pct: 0; --fill: #8886; display: inline-flex; gap: 6px; align-items: center; padding: 1px 6px; border-radius: 999px; border: 1px solid #8883; background: #8881; position: relative; overflow: hidden; white-space: nowrap; }
-      .limit::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, var(--fill) calc(var(--pct) * 1%), transparent 0); opacity: 0.25; pointer-events: none; }
+      .limit::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, var(--fill) calc(var(--pct) * 1%), transparent 0); opacity: 0.35; pointer-events: none; }
       .limit > * { position: relative; }
       .limit .name { opacity: 0.85; }
-      .limit.ok { --fill: #0a7; }
-      .limit.warn { --fill: #d9a200; }
-      .limit.bad { --fill: #d55; }
-      .pct { font-weight: 700; }
+      .limit.ok { --fill: #0a7; border-color: #0a74; }
+      .limit.warn { --fill: #d9a200; border-color: #d9a244; }
+      .limit.bad { --fill: #d55; border-color: #d554; }
+      .pct { font-weight: 800; }
       .pct.ok { color: #0a7; }
       .pct.warn { color: #d9a200; }
       .pct.bad { color: #d55; }
@@ -78,21 +78,19 @@ UI_HTML = """<!doctype html>
       <button id="refresh">Update now</button>
       <button id="add">Add accounts</button>
       <button id="addKeys">Add Claude keys</button>
-      <label class="muted">Filter <input id="filter" placeholder="label / email / provider" /></label>
+      <label class="muted">Filter <input id="filter" placeholder="email / note / provider" /></label>
       <span id="summary" class="muted"></span>
       <span id="status" class="muted"></span>
     </div>
     <table>
       <thead>
         <tr>
-          <th>Label</th>
           <th>Provider</th>
           <th>Account / Note</th>
           <th>Plan / Model</th>
           <th>Limits</th>
           <th class="nowrap">5h reset</th>
           <th class="nowrap">Weekly reset</th>
-          <th>Last update</th>
           <th>State</th>
           <th>Action</th>
         </tr>
@@ -342,6 +340,8 @@ UI_HTML = """<!doctype html>
         const norm = (parsed && parsed.normalized) ? parsed.normalized : {};
         const reg = item.registry || null;
         const windows = norm.windows || {};
+        const label = safe(item.account_label);
+        const detailsHref = `/latest/${encodeURIComponent(label)}`;
 
         const regProvider = reg ? (reg.provider || "") : "";
         const regEmail = reg ? (reg.expected_email || "") : "";
@@ -378,10 +378,11 @@ UI_HTML = """<!doctype html>
         }
 
         const accountTitleParts = [];
+        if (label) accountTitleParts.push(label);
         if (email) accountTitleParts.push(email);
         if (regNote) accountTitleParts.push(regNote);
         const accountTitle = accountTitleParts.join(" · ");
-        let accountHtml = `<span title="${esc(accountTitle)}">${accountLineHtml}${regNote ? `<span class="muted"> · ${esc(regNote)}</span>` : ""}</span>`;
+        let accountHtml = `<a class="mono" href="${detailsHref}" title="${esc(accountTitle)}">${accountLineHtml}${regNote ? `<span class="muted"> · ${esc(regNote)}</span>` : ""}</a>`;
 
         const providerHtml = providerRaw ? `<span class="pill mono">${esc(providerRaw)}</span>` : "-";
 
@@ -454,14 +455,12 @@ UI_HTML = """<!doctype html>
 
         return `
           <tr>
-            <td class="mono"><a class="mono" href="/latest/${encodeURIComponent(safe(item.account_label))}">${esc(safe(item.account_label))}</a></td>
             <td>${providerHtml}</td>
             <td>${accountHtml}</td>
             <td class="mono">${esc(planOrModel)}</td>
             <td>${limitsHtml}</td>
             <td class="mono nowrap">${reset5hHtml}</td>
             <td class="mono nowrap">${resetWeeklyHtml}</td>
-            <td class="mono">${esc(fmtTs(lastUpdate))}</td>
             <td>${state}</td>
             <td><button class="tablebtn" title="Update" aria-label="Update" data-label="${encodeURIComponent(safe(item.account_label))}">↻</button></td>
           </tr>
