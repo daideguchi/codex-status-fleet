@@ -41,6 +41,10 @@ UI_HTML = """<!doctype html>
       table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.1; }
       th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #8883; vertical-align: middle; white-space: nowrap; }
       th { position: sticky; top: 0; background: Canvas; z-index: 1; }
+      th.sortable { cursor: pointer; user-select: none; }
+      th.sortable:hover { background: #8881; }
+      th.sortable[data-dir="asc"]::after { content: " ▲"; opacity: 0.65; font-size: 11px; }
+      th.sortable[data-dir="desc"]::after { content: " ▼"; opacity: 0.65; font-size: 11px; }
       .pill { display: inline-block; padding: 1px 6px; border-radius: 999px; border: 1px solid #8884; font-size: 12px; }
       .ok { color: #0a7; border-color: #0a74; }
       .bad { color: #d55; border-color: #d554; }
@@ -85,21 +89,21 @@ UI_HTML = """<!doctype html>
       <span id="summary" class="muted"></span>
       <span id="status" class="muted"></span>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>Provider</th>
-          <th>Account / Note</th>
-          <th>Plan / Model</th>
-          <th>Limits</th>
-          <th class="nowrap">5h reset</th>
-          <th class="nowrap">Weekly reset</th>
-          <th>State</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
+	    <table>
+	      <thead>
+	        <tr>
+	          <th class="sortable" data-sort="provider">Provider</th>
+	          <th class="sortable" data-sort="account">Account / Note</th>
+	          <th class="sortable" data-sort="plan">Plan / Model</th>
+	          <th class="sortable" data-sort="limits">Limits</th>
+	          <th class="sortable nowrap" data-sort="reset5h">5h reset</th>
+	          <th class="sortable nowrap" data-sort="resetWeekly">Weekly reset</th>
+	          <th class="sortable" data-sort="state">State</th>
+	          <th>Action</th>
+	        </tr>
+	      </thead>
+	      <tbody id="rows"></tbody>
+	    </table>
     <div id="addModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
       <div class="card">
         <div class="row" style="justify-content: space-between;">
@@ -184,11 +188,77 @@ UI_HTML = """<!doctype html>
       const keysModel = $("keysModel");
       const keysNote = $("keysNote");
       const keysEnabled = $("keysEnabled");
-      const keysFound = $("keysFound");
-      const keysPreview = $("keysPreview");
-      let cachedItems = [];
-      let lastUpdateText = "";
-      let refreshing = false;
+	      const keysFound = $("keysFound");
+	      const keysPreview = $("keysPreview");
+	      let cachedItems = [];
+	      let lastUpdateText = "";
+	      let refreshing = false;
+	      let sortKey = null;
+	      let sortDir = "asc"; // asc | desc
+
+	      const SORT_DEFAULT_DIR = {
+	        provider: "asc",
+	        account: "asc",
+	        plan: "asc",
+	        limits: "desc",
+	        reset5h: "asc",
+	        resetWeekly: "asc",
+	        state: "desc",
+	      };
+
+	      function loadSort() {
+	        try {
+	          const raw = localStorage.getItem("codex_status_fleet_sort");
+	          if (!raw) return;
+	          const obj = JSON.parse(raw);
+	          const k = obj && obj.key ? String(obj.key) : null;
+	          const d = obj && obj.dir ? String(obj.dir) : null;
+	          if (k) sortKey = k;
+	          if (d === "asc" || d === "desc") sortDir = d;
+	        } catch {}
+	      }
+
+	      function saveSort() {
+	        try {
+	          localStorage.setItem("codex_status_fleet_sort", JSON.stringify({ key: sortKey, dir: sortDir }));
+	        } catch {}
+	      }
+
+	      function setSort(key) {
+	        const k = key ? String(key) : null;
+	        if (!k) {
+	          sortKey = null;
+	          sortDir = "asc";
+	          saveSort();
+	          applySortIndicators();
+	          renderFromCache();
+	          return;
+	        }
+
+	        if (sortKey === k) {
+	          sortDir = (sortDir === "asc") ? "desc" : "asc";
+	        } else {
+	          sortKey = k;
+	          sortDir = SORT_DEFAULT_DIR[k] || "asc";
+	        }
+	        saveSort();
+	        applySortIndicators();
+	        renderFromCache();
+	      }
+
+	      function applySortIndicators() {
+	        const ths = document.querySelectorAll("th.sortable");
+	        for (const th of ths) {
+	          const k = th.getAttribute("data-sort");
+	          if (k && sortKey === k) {
+	            th.setAttribute("data-dir", sortDir);
+	            th.setAttribute("aria-sort", sortDir === "asc" ? "ascending" : "descending");
+	          } else {
+	            th.removeAttribute("data-dir");
+	            th.removeAttribute("aria-sort");
+	          }
+	        }
+	      }
 
       function fmtPct(p) {
         if (p === null || p === undefined) return "-";
@@ -201,10 +271,10 @@ UI_HTML = """<!doctype html>
         if (!Number.isFinite(n)) return null;
         return Math.max(0, Math.min(100, Math.round(n)));
       }
-      function pctClass(leftPercent) {
-        if (leftPercent === null || leftPercent === undefined) return "";
-        const p = Number(leftPercent);
-        if (!Number.isFinite(p)) return "";
+	      function pctClass(leftPercent) {
+	        if (leftPercent === null || leftPercent === undefined) return "";
+	        const p = Number(leftPercent);
+	        if (!Number.isFinite(p)) return "";
         if (p <= 20) return "bad";
         if (p <= 60) return "warn";
         return "ok";
@@ -233,10 +303,153 @@ UI_HTML = """<!doctype html>
           return null;
         }
       }
-      function safe(v, fallback="-") {
-        if (v === null || v === undefined || v === "") return fallback;
-        return String(v);
-      }
+	      function safe(v, fallback="-") {
+	        if (v === null || v === undefined || v === "") return fallback;
+	        return String(v);
+	      }
+
+	      function _norm(item) {
+	        const parsed = item && item.parsed ? item.parsed : {};
+	        return (parsed && parsed.normalized) ? parsed.normalized : {};
+	      }
+
+	      function _reg(item) {
+	        return (item && item.registry) ? item.registry : {};
+	      }
+
+	      function _lc(s) {
+	        return String(s || "").trim().toLowerCase();
+	      }
+
+	      function _stateRank(item) {
+	        const s = classify(item);
+	        if (s === "ok") return 0;
+	        if (s === "pending") return 1;
+	        if (s === "disabled") return 2;
+	        if (s === "auth_required") return 3;
+	        if (s === "probe_error") return 4;
+	        if (s === "no_parsed") return 4;
+	        return 5;
+	      }
+
+	      function _windowLeft(item, key) {
+	        const windows = (_norm(item).windows) || {};
+	        const w = windows && windows[key] ? windows[key] : null;
+	        if (!w || typeof w !== "object") return null;
+	        let leftPct = clampPct(w.leftPercent);
+	        if (leftPct === null) {
+	          const used = clampPct(w.usedPercent);
+	          if (used !== null) leftPct = clampPct(100 - used);
+	        }
+	        return leftPct;
+	      }
+
+	      function _windowResetEpoch(item, key) {
+	        const windows = (_norm(item).windows) || {};
+	        const w = windows && windows[key] ? windows[key] : null;
+	        if (!w || typeof w !== "object") return null;
+	        if (typeof w.resetsAt === "number" && Number.isFinite(w.resetsAt)) return w.resetsAt;
+	        const iso = w.resetsAtIsoUtc;
+	        if (!iso) return null;
+	        const t = Date.parse(iso);
+	        if (!Number.isFinite(t)) return null;
+	        return Math.floor(t / 1000);
+	      }
+
+	      function _accountKey(item) {
+	        const n = _norm(item);
+	        const r = _reg(item);
+	        const email = _lc(n.account_email || n.expected_email || r.expected_email || "");
+	        const note = _lc(r.note || "");
+	        return (email || "") + "\n" + (note || "");
+	      }
+
+	      function _providerKey(item) {
+	        const n = _norm(item);
+	        const r = _reg(item);
+	        return _lc(r.provider || n.provider || "");
+	      }
+
+	      function _planKey(item) {
+	        const parsed = item && item.parsed ? item.parsed : {};
+	        const n = _norm(item);
+	        const r = _reg(item);
+	        const provider = _providerKey(item);
+	        const isApiProvider = provider.startsWith("anthropic") || provider.startsWith("claude") || provider.startsWith("fireworks");
+	        const plan = _lc(n.account_planType || n.rate_planType || n.expected_planType || r.expected_planType || "");
+	        const model = _lc((parsed && parsed.model) || n.model || "");
+	        return isApiProvider ? model : plan;
+	      }
+
+	      function _labelKey(item) {
+	        return _lc(item && item.account_label ? item.account_label : "");
+	      }
+
+	      function _cmp(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }
+
+	      function _cmpText(a, b, dir) {
+	        const ax = _lc(a);
+	        const bx = _lc(b);
+	        const an = ax ? ax : null;
+	        const bn = bx ? bx : null;
+	        if (an === null && bn === null) return 0;
+	        if (an === null) return 1;
+	        if (bn === null) return -1;
+	        const c = _cmp(an, bn);
+	        return dir === "desc" ? -c : c;
+	      }
+
+	      function _cmpNum(a, b, dir) {
+	        const an = (typeof a === "number" && Number.isFinite(a)) ? a : null;
+	        const bn = (typeof b === "number" && Number.isFinite(b)) ? b : null;
+	        if (an === null && bn === null) return 0;
+	        if (an === null) return 1;
+	        if (bn === null) return -1;
+	        const c = _cmp(an, bn);
+	        return dir === "desc" ? -c : c;
+	      }
+
+	      function _sortComparator(a, b) {
+	        const dir = sortDir;
+	        const key = sortKey;
+	        if (!key) return 0;
+
+	        if (key === "provider") {
+	          const c = _cmpText(_providerKey(a), _providerKey(b), dir);
+	          return c || _cmpText(_accountKey(a), _accountKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
+	        }
+	        if (key === "account") {
+	          const c = _cmpText(_accountKey(a), _accountKey(b), dir);
+	          return c || _cmpText(_providerKey(a), _providerKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
+	        }
+	        if (key === "plan") {
+	          const c = _cmpText(_planKey(a), _planKey(b), dir);
+	          return c || _cmpText(_accountKey(a), _accountKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
+	        }
+	        if (key === "limits") {
+	          const aw = _windowLeft(a, "weekly");
+	          const bw = _windowLeft(b, "weekly");
+	          const c1 = _cmpNum(aw, bw, dir);
+	          if (c1) return c1;
+	          const a5 = _windowLeft(a, "5h");
+	          const b5 = _windowLeft(b, "5h");
+	          const c2 = _cmpNum(a5, b5, dir);
+	          return c2 || _cmpText(_accountKey(a), _accountKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
+	        }
+	        if (key === "reset5h") {
+	          const c = _cmpNum(_windowResetEpoch(a, "5h"), _windowResetEpoch(b, "5h"), dir);
+	          return c || _cmpText(_accountKey(a), _accountKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
+	        }
+	        if (key === "resetWeekly") {
+	          const c = _cmpNum(_windowResetEpoch(a, "weekly"), _windowResetEpoch(b, "weekly"), dir);
+	          return c || _cmpText(_accountKey(a), _accountKey(b), "asc") || _cmpText(_labelKey(a), _labelKey(b), "asc");
+	        }
+	        if (key === "state") {
+	          const c = _cmpNum(_stateRank(a), _stateRank(b), dir);
+	          return c || _cmpNum(_windowLeft(a, "weekly"), _windowLeft(b, "weekly"), "asc") || _cmpText(_accountKey(a), _accountKey(b), "asc");
+	        }
+	        return 0;
+	      }
       function esc(v) {
         return String(v).replace(/[&<>"']/g, (c) => {
           if (c === "&") return "&amp;";
@@ -495,44 +708,45 @@ UI_HTML = """<!doctype html>
         `;
       }
 
-      function renderFromCache() {
-        const items = Array.isArray(cachedItems) ? cachedItems : [];
+	      function renderFromCache() {
+	        const items = Array.isArray(cachedItems) ? cachedItems : [];
 
-        const q = (filterEl.value || "").trim().toLowerCase();
-        const filtered = q
-          ? items.filter((it) => {
-              const parsed = it.parsed || {};
-              const norm = parsed.normalized || {};
-              const reg = it.registry || {};
+	        const q = (filterEl.value || "").trim().toLowerCase();
+	        const filtered = q
+	          ? items.filter((it) => {
+	              const parsed = it.parsed || {};
+	              const norm = parsed.normalized || {};
+	              const reg = it.registry || {};
               const email = (norm.account_email || norm.expected_email || reg.expected_email || "").toLowerCase();
               const provider = (reg.provider || norm.provider || "").toLowerCase();
               const note = (reg.note || "").toLowerCase();
               const model = (parsed.model || norm.model || "").toLowerCase();
               const label = (it.account_label || "").toLowerCase();
-              return (
-                label.includes(q) ||
-                email.includes(q) ||
-                provider.includes(q) ||
-                note.includes(q) ||
-                model.includes(q)
-              );
-            })
-          : items;
+	              return (
+	                label.includes(q) ||
+	                email.includes(q) ||
+	                provider.includes(q) ||
+	                note.includes(q) ||
+	                model.includes(q)
+	              );
+	            })
+	          : items;
 
-        rowsEl.innerHTML = filtered.map(rowHtml).join("");
-        const counts = { ok: 0, auth_required: 0, pending: 0, disabled: 0, errors: 0, total: items.length };
-        for (const it of items) {
-          const s = classify(it);
+	        const sorted = sortKey ? [...filtered].sort(_sortComparator) : filtered;
+	        rowsEl.innerHTML = sorted.map(rowHtml).join("");
+	        const counts = { ok: 0, auth_required: 0, pending: 0, disabled: 0, errors: 0, total: items.length };
+	        for (const it of items) {
+	          const s = classify(it);
           if (s === "ok") counts.ok += 1;
           else if (s === "auth_required") counts.auth_required += 1;
           else if (s === "pending") counts.pending += 1;
           else if (s === "disabled") counts.disabled += 1;
           else counts.errors += 1;
-        }
-        summaryEl.textContent = `total:${counts.total} ok:${counts.ok} auth:${counts.auth_required} pending:${counts.pending} err:${counts.errors} disabled:${counts.disabled}`;
-        const suffix = lastUpdateText ? ` — ${lastUpdateText}` : "";
-        statusEl.textContent = `${filtered.length}/${items.length} rows${suffix}`;
-      }
+	        }
+	        summaryEl.textContent = `total:${counts.total} ok:${counts.ok} auth:${counts.auth_required} pending:${counts.pending} err:${counts.errors} disabled:${counts.disabled}`;
+	        const suffix = lastUpdateText ? ` — ${lastUpdateText}` : "";
+	        statusEl.textContent = `${sorted.length}/${items.length} rows${suffix}`;
+	      }
 
       async function loadLatest() {
         const started = Date.now();
@@ -700,7 +914,17 @@ UI_HTML = """<!doctype html>
         }
       }
 
-      refreshBtn.addEventListener("click", updateNow);
+	      const theadEl = document.querySelector("thead");
+	      theadEl.addEventListener("click", (ev) => {
+	        const t = ev.target;
+	        const th = t && t.closest ? t.closest("th.sortable") : null;
+	        if (!th) return;
+	        const k = th.getAttribute("data-sort");
+	        if (!k) return;
+	        setSort(k);
+	      });
+
+	      refreshBtn.addEventListener("click", updateNow);
       addBtn.addEventListener("click", () => { setKeysModalOpen(false); setModalOpen(true); });
       addKeysBtn.addEventListener("click", () => { setModalOpen(false); setKeysModalOpen(true); });
       addClose.addEventListener("click", () => setModalOpen(false));
@@ -733,13 +957,16 @@ UI_HTML = """<!doctype html>
         updateNow(label);
       });
 
-      loadLatest().then(() => {
-        if (isReloadNavigation()) updateNow();
-      });
-    </script>
-  </body>
-</html>
-"""
+	      loadSort();
+	      applySortIndicators();
+
+	      loadLatest().then(() => {
+	        if (isReloadNavigation()) updateNow();
+	      });
+	    </script>
+	  </body>
+	</html>
+	"""
 
 
 def _now_iso() -> str:
