@@ -1,0 +1,30 @@
+services:
+  collector:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.collector
+    environment:
+      - DB_PATH=/data/status.db
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+  refresher:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.refresher
+      args:
+        CODEX_CLI_VERSION: "${CODEX_CLI_VERSION:-0.77.0}"
+    environment:
+      - CONFIG_PATH=/config/accounts.json
+      - ACCOUNTS_DIR=/accounts
+      - COLLECTOR_URL=http://collector:8080/ingest
+      - RPC_TIMEOUT_SEC=${RPC_TIMEOUT_SEC:-10.0}
+    volumes:
+      - ./accounts:/accounts
+      - ./accounts.json:/config/accounts.json
+    depends_on:
+      - collector
+    restart: unless-stopped

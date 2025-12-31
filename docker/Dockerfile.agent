@@ -1,0 +1,24 @@
+FROM node:20-slim
+
+ARG CODEX_CLI_VERSION=0.77.0
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 python3-pip python3-venv ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
+
+WORKDIR /app
+
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY agent/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY agent/run_status.py /app/run_status.py
+
+ENV COLLECTOR_URL=http://collector:8080/ingest
+ENV POLL_INTERVAL_SEC=60
+
+CMD ["python", "/app/run_status.py"]

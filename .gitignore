@@ -1,0 +1,22 @@
+.DS_Store
+.env
+__pycache__/
+*.pyc
+
+# Local data
+data/
+
+# Per-account auth (NEVER commit)
+accounts/
+
+# Generated compose file
+docker-compose.accounts.yml
+
+# Local config
+accounts.json
+
+# Local schema dumps
+tmp_schema/
+
+# Memos / scratch
+memo*.txt

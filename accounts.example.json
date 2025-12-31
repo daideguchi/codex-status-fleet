@@ -1,0 +1,14 @@
+{
+  "collector_url": "http://collector:8080/ingest",
+  "collector_in_compose": true,
+  "manual_refresh": true,
+  "poll_interval_sec": 60,
+  "codex_cli_version": "0.77.0",
+  "accounts": [
+    { "label": "acc_user_example_com", "enabled": true, "expected_email": "user@example.com", "expected_planType": "plus" },
+    { "label": "acc2", "enabled": false, "note": "解約済みなど（生成から除外）" }
+  ],
+  "agent": {
+    "rpc_timeout_sec": 10.0
+  }
+}
