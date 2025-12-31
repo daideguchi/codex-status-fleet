@@ -44,7 +44,7 @@ UI_HTML = """<!doctype html>
       .pill { display: inline-block; padding: 1px 6px; border-radius: 999px; border: 1px solid #8884; font-size: 12px; }
       .ok { color: #0a7; border-color: #0a74; }
       .bad { color: #d55; border-color: #d554; }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-variant-numeric: tabular-nums; }
       .muted { opacity: 0.8; }
       .nowrap { white-space: nowrap; }
       .right { text-align: right; }
@@ -54,11 +54,12 @@ UI_HTML = """<!doctype html>
       .card { background: Canvas; border: 1px solid #8884; border-radius: 12px; padding: 12px; width: min(720px, 100%); }
       .card h2 { font-size: 14px; margin: 0 0 8px; }
       .small { font-size: 12px; opacity: 0.85; }
-      .limits { display: inline-flex; flex-wrap: nowrap; gap: 6px; align-items: center; white-space: nowrap; }
-      .limit { --pct: 0; --fill: #8886; display: inline-flex; gap: 6px; align-items: center; padding: 1px 6px; border-radius: 999px; border: 1px solid #8883; background: #8881; position: relative; overflow: hidden; white-space: nowrap; }
-      .limit::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, var(--fill) calc(var(--pct) * 1%), transparent 0); opacity: 0.35; pointer-events: none; }
+      .limits { display: inline-flex; flex-wrap: nowrap; gap: 8px; align-items: center; white-space: nowrap; }
+      .limit { --pct: 0; --fill: #8886; width: 120px; display: inline-flex; justify-content: space-between; gap: 10px; align-items: center; padding: 1px 8px; border-radius: 999px; border: 1px solid #8883; background: #8881; position: relative; overflow: hidden; white-space: nowrap; }
+      .limit.more { width: auto; justify-content: flex-start; gap: 0; }
+      .limit::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, var(--fill) calc(var(--pct) * 1%), transparent 0); opacity: 0.45; pointer-events: none; }
       .limit > * { position: relative; }
-      .limit .name { opacity: 0.85; }
+      .limit .name { opacity: 0.9; }
       .limit.ok { --fill: #0a7; border-color: #0a74; }
       .limit.warn { --fill: #d9a200; border-color: #d9a244; }
       .limit.bad { --fill: #d55; border-color: #d554; }
@@ -67,6 +68,8 @@ UI_HTML = """<!doctype html>
       .pct.warn { color: #d9a200; }
       .pct.bad { color: #d55; }
       .tablebtn { padding: 2px 8px; border-radius: 6px; font-size: 12px; }
+      tr.row-warn td { background: rgba(217, 162, 0, 0.08); }
+      tr.row-bad td { background: rgba(213, 85, 85, 0.10); }
     </style>
   </head>
   <body>
@@ -386,6 +389,16 @@ UI_HTML = """<!doctype html>
 
         const providerHtml = providerRaw ? `<span class="pill mono">${esc(providerRaw)}</span>` : "-";
 
+        const leftOf = (w) => {
+          if (!w || typeof w !== "object") return null;
+          let leftPct = clampPct(w.leftPercent);
+          if (leftPct === null) {
+            const used = clampPct(w.usedPercent);
+            if (used !== null) leftPct = clampPct(100 - used);
+          }
+          return leftPct;
+        };
+
         const resetCell = (w) => {
           if (!w || typeof w !== "object") return "-";
           const full = fmtTs(w.resetsAtIsoUtc);
@@ -447,14 +460,29 @@ UI_HTML = """<!doctype html>
         const extraKeys = keys.slice(maxChips);
         for (const k of displayKeys) addLimitBlock(k, windows[k]);
         if (extraKeys.length) {
-          limitBlocks.push(`<span class="limit" title="${esc("more: " + extraKeys.join(", "))}"><span class="mono name">+${extraKeys.length}</span></span>`);
+          limitBlocks.push(`<span class="limit more" title="${esc("more: " + extraKeys.join(", "))}"><span class="mono name">+${extraKeys.length}</span></span>`);
         }
         const limitsHtml = limitBlocks.length ? `<span class="limits">${limitBlocks.join("")}</span>` : "-";
         const reset5hHtml = resetCell(windows["5h"]);
         const resetWeeklyHtml = resetCell(windows["weekly"]);
 
+        const s = classify(item);
+        const left5h = leftOf(windows["5h"]);
+        const leftWeekly = leftOf(windows["weekly"]);
+        let worst = null;
+        if (typeof leftWeekly === "number") worst = leftWeekly;
+        else if (typeof left5h === "number") worst = left5h;
+        let rowCls = "";
+        if (s === "auth_required" || s === "probe_error" || s === "no_parsed") rowCls = "row-bad";
+        else if (s === "pending") rowCls = "row-warn";
+        else {
+          const c = pctClass(worst);
+          if (c === "bad") rowCls = "row-bad";
+          else if (c === "warn") rowCls = "row-warn";
+        }
+
         return `
-          <tr>
+          <tr class="${rowCls}">
             <td>${providerHtml}</td>
             <td>${accountHtml}</td>
             <td class="mono">${esc(planOrModel)}</td>
