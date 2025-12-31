@@ -12,7 +12,6 @@ if [[ ! -f "${config_path}" ]]; then
   exit 1
 fi
 
-labels="$(python3 -c 'import json,sys; cfg=json.load(open(sys.argv[1],"r",encoding="utf-8")); out=[]\nfor a in cfg.get(\"accounts\",[]):\n  if not isinstance(a,dict):\n    continue\n  if a.get(\"enabled\", True) is False:\n    continue\n  label=(a.get(\"label\") or \"\").strip()\n  if not label:\n    continue\n  provider=(a.get(\"provider\") or \"codex\").strip().lower()\n  if provider not in (\"codex\",\"openai_codex\",\"openai\"):\n    continue\n  out.append(label)\nprint(\"\\n\".join(out))' \"${config_path}\")"
 labels="$(
   python3 - "${config_path}" <<'PY'
 import json
