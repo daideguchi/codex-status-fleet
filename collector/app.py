@@ -21,6 +21,8 @@ REFRESH_TIMEOUT_SEC = float(os.getenv("REFRESH_TIMEOUT_SEC", "180"))
 app = FastAPI(title="Codex Status Collector")
 
 _db_lock = threading.Lock()
+_refresh_async_lock = threading.Lock()
+_refresh_async_inflight: dict[str, str] = {}
 
 UI_HTML = """<!doctype html>
 <html lang="ja">
@@ -48,7 +50,7 @@ UI_HTML = """<!doctype html>
       th.sortable:hover { background: #8881; }
       th.sortable[data-dir="asc"]::after { content: " ▲"; opacity: 0.65; font-size: 11px; }
       th.sortable[data-dir="desc"]::after { content: " ▼"; opacity: 0.65; font-size: 11px; }
-      .pill { display: inline-block; padding: 1px 6px; border-radius: 999px; border: 1px solid #8884; font-size: 12px; }
+      .pill { display: inline-block; padding: 0 6px; border-radius: 999px; border: 1px solid #8884; font-size: 11px; line-height: 1.2; }
       .ok { color: #0a7; border-color: #0a74; }
       .bad { color: #d55; border-color: #d554; }
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-variant-numeric: tabular-nums; }
@@ -78,7 +80,7 @@ UI_HTML = """<!doctype html>
       .credit.ok { color: #0a7; border-color: #0a74; }
       .credit.warn { color: #d9a200; border-color: #d9a244; }
       .credit.bad { color: #d55; border-color: #d554; }
-      .tablebtn { padding: 1px 7px; border-radius: 6px; font-size: 12px; }
+      .tablebtn { padding: 0 6px; border-radius: 6px; font-size: 11px; line-height: 1.2; }
       .hide-resets .col-resets { display: none; }
       .hide-credits .col-credits { display: none; }
       tr.row-warn td { background: rgba(217, 162, 0, 0.08); }
@@ -103,7 +105,7 @@ UI_HTML = """<!doctype html>
 	        </select>
 	      </label>
 	      <button id="resetSort" title="Reset sorting to default order">Default order</button>
-	      <label class="muted">Filter <input id="filter" placeholder="email / note / provider" /></label>
+		      <label class="muted">Filter <input id="filter" placeholder="label / email / provider / note / key" /></label>
 	      <span id="summary" class="muted"></span>
 	      <span id="status" class="muted"></span>
 	    </div>
@@ -216,15 +218,18 @@ UI_HTML = """<!doctype html>
 	        </div>
 	        <div class="small">Edit expected email / note / enabled (saved into accounts.json + registry).</div>
 	        <div style="height: 8px"></div>
-	        <div class="row">
-	          <span class="muted">Target</span>
-	          <span id="noteTarget" class="mono"></span>
-	        </div>
-	        <div style="height: 8px"></div>
-	        <div class="row">
-	          <label class="muted">Email (expected) <input id="editEmail" placeholder="user@example.com" /></label>
-	          <label class="muted"><input id="editEnabled" type="checkbox" checked /> enabled</label>
-	        </div>
+		        <div class="row">
+		          <span class="muted">Target</span>
+		          <span id="noteTarget" class="mono"></span>
+		        </div>
+		        <div style="height: 8px"></div>
+		        <div id="noteMsg" class="small muted"></div>
+		        <div id="noteErr" class="small bad"></div>
+		        <div style="height: 8px"></div>
+		        <div class="row">
+		          <label class="muted">Email (expected) <input id="editEmail" placeholder="user@example.com" /></label>
+		          <label class="muted"><input id="editEnabled" type="checkbox" checked /> enabled</label>
+		        </div>
 	        <div style="height: 8px"></div>
 	        <div class="row">
 	          <label class="muted">Append <input id="noteAppend" placeholder="comment" /></label>
@@ -250,15 +255,18 @@ UI_HTML = """<!doctype html>
 	        </div>
 	        <div class="small">Remove this row from accounts.json + registry. Optional: delete local data / purge history.</div>
 	        <div style="height: 8px"></div>
-	        <div class="row">
-	          <span class="muted">Target</span>
-	          <span id="removeTarget" class="mono"></span>
-	        </div>
-	        <div style="height: 8px"></div>
-	        <div class="row">
-	          <label class="muted"><input id="removeLocal" type="checkbox" /> delete local data</label>
-	          <label class="muted"><input id="removePurge" type="checkbox" /> purge history</label>
-	        </div>
+		        <div class="row">
+		          <span class="muted">Target</span>
+		          <span id="removeTarget" class="mono"></span>
+		        </div>
+		        <div style="height: 8px"></div>
+		        <div id="removeMsg" class="small muted"></div>
+		        <div id="removeErr" class="small bad"></div>
+		        <div style="height: 8px"></div>
+		        <div class="row">
+		          <label class="muted"><input id="removeLocal" type="checkbox" /> delete local data</label>
+		          <label class="muted"><input id="removePurge" type="checkbox" /> purge history</label>
+		        </div>
 	        <div style="height: 10px"></div>
 	        <div class="row" style="justify-content: flex-end;">
 	          <button id="removeCancel">Cancel</button>
@@ -312,25 +320,29 @@ UI_HTML = """<!doctype html>
 		      const fwEnabled = $("fwEnabled");
 		      const fwFound = $("fwFound");
 		      const fwPreview = $("fwPreview");
-		      const noteModal = $("noteModal");
-		      const noteClose = $("noteClose");
-		      const noteCancel = $("noteCancel");
-		      const noteSave = $("noteSave");
-		      const noteTarget = $("noteTarget");
-		      const editEmail = $("editEmail");
-		      const editEnabled = $("editEnabled");
-		      const noteAppend = $("noteAppend");
-		      const noteSep = $("noteSep");
-		      const editAppendBtn = $("editAppendBtn");
-		      const editNote = $("editNote");
-		      const noteClear = $("noteClear");
-		      const removeModal = $("removeModal");
-		      const removeClose = $("removeClose");
-		      const removeCancel = $("removeCancel");
-		      const removeDo = $("removeDo");
-		      const removeTarget = $("removeTarget");
-		      const removeLocal = $("removeLocal");
-		      const removePurge = $("removePurge");
+			      const noteModal = $("noteModal");
+			      const noteClose = $("noteClose");
+			      const noteCancel = $("noteCancel");
+			      const noteSave = $("noteSave");
+			      const noteTarget = $("noteTarget");
+			      const noteMsg = $("noteMsg");
+			      const noteErr = $("noteErr");
+			      const editEmail = $("editEmail");
+			      const editEnabled = $("editEnabled");
+			      const noteAppend = $("noteAppend");
+			      const noteSep = $("noteSep");
+			      const editAppendBtn = $("editAppendBtn");
+			      const editNote = $("editNote");
+			      const noteClear = $("noteClear");
+			      const removeModal = $("removeModal");
+			      const removeClose = $("removeClose");
+			      const removeCancel = $("removeCancel");
+			      const removeDo = $("removeDo");
+			      const removeTarget = $("removeTarget");
+			      const removeMsg = $("removeMsg");
+			      const removeErr = $("removeErr");
+			      const removeLocal = $("removeLocal");
+			      const removePurge = $("removePurge");
 	      let cachedItems = [];
 	      let lastUpdateText = "";
 	      let refreshing = false;
@@ -732,16 +744,18 @@ UI_HTML = """<!doctype html>
         const note = String(reg.note || "");
         const enabled = reg && reg.enabled === false ? false : true;
 
-        if (noteTarget) noteTarget.textContent = accountEmail ? `${noteLabel} (${accountEmail})` : noteLabel;
-        if (editEmail) editEmail.value = expectedEmail || "";
-        if (editEnabled) editEnabled.checked = enabled;
-        if (editNote) editNote.value = note || "";
-        if (noteAppend) noteAppend.value = "";
+	        if (noteTarget) noteTarget.textContent = accountEmail ? `${noteLabel} (${accountEmail})` : noteLabel;
+	        if (editEmail) editEmail.value = expectedEmail || "";
+	        if (editEnabled) editEnabled.checked = enabled;
+	        if (editNote) editNote.value = note || "";
+	        if (noteAppend) noteAppend.value = "";
+	        if (noteMsg) noteMsg.textContent = "";
+	        if (noteErr) noteErr.textContent = "";
 
-        setModalOpen(false);
-        setKeysModalOpen(false);
-        setFwModalOpen(false);
-        setRemoveModalOpen(false);
+	        setModalOpen(false);
+	        setKeysModalOpen(false);
+	        setFwModalOpen(false);
+	        setRemoveModalOpen(false);
         setNoteModalOpen(true);
       }
 
@@ -753,14 +767,16 @@ UI_HTML = """<!doctype html>
         const reg = it ? (it.registry || {}) : {};
         const email = String(norm.account_email || norm.expected_email || reg.expected_email || "").trim();
 
-        if (removeTarget) removeTarget.textContent = email ? `${removeLabel} (${email})` : removeLabel;
-        if (removeLocal) removeLocal.checked = false;
-        if (removePurge) removePurge.checked = false;
+	        if (removeTarget) removeTarget.textContent = email ? `${removeLabel} (${email})` : removeLabel;
+	        if (removeLocal) removeLocal.checked = false;
+	        if (removePurge) removePurge.checked = false;
+	        if (removeMsg) removeMsg.textContent = "";
+	        if (removeErr) removeErr.textContent = "";
 
-        setModalOpen(false);
-        setKeysModalOpen(false);
-        setFwModalOpen(false);
-        setNoteModalOpen(false);
+	        setModalOpen(false);
+	        setKeysModalOpen(false);
+	        setFwModalOpen(false);
+	        setNoteModalOpen(false);
         setRemoveModalOpen(true);
       }
 
@@ -782,12 +798,14 @@ UI_HTML = """<!doctype html>
         const noteText = (editNote && editNote.value !== undefined) ? String(editNote.value) : "";
         const enabled = !!(editEnabled && editEnabled.checked);
 
-        noteSave.disabled = true;
-        noteCancel.disabled = true;
-        noteClose.disabled = true;
-        if (noteClear) noteClear.disabled = true;
-        statusEl.textContent = "Saving note...";
-        try {
+	        noteSave.disabled = true;
+	        noteCancel.disabled = true;
+	        noteClose.disabled = true;
+	        if (noteClear) noteClear.disabled = true;
+	        statusEl.textContent = "Saving note...";
+	        if (noteMsg) noteMsg.textContent = "Saving…";
+	        if (noteErr) noteErr.textContent = "";
+	        try {
           const payload = {
             account_label: noteLabel,
             expected_email: emailText,
@@ -822,13 +840,15 @@ UI_HTML = """<!doctype html>
           await loadLatest();
           lastUpdateText = `Note updated — ${new Date().toLocaleTimeString()}`;
           renderFromCache();
-        } catch (e) {
-          statusEl.textContent = `Note error: ${e}`;
-        } finally {
-          noteSave.disabled = false;
-          noteCancel.disabled = false;
-          noteClose.disabled = false;
-          if (noteClear) noteClear.disabled = false;
+	        } catch (e) {
+	          statusEl.textContent = `Note error: ${e}`;
+	          if (noteMsg) noteMsg.textContent = "";
+	          if (noteErr) noteErr.textContent = String(e || "");
+	        } finally {
+	          noteSave.disabled = false;
+	          noteCancel.disabled = false;
+	          noteClose.disabled = false;
+	          if (noteClear) noteClear.disabled = false;
         }
       }
 
@@ -840,12 +860,14 @@ UI_HTML = """<!doctype html>
         const emailText = (editEmail && editEmail.value) ? String(editEmail.value).trim() : "";
         const enabled = !!(editEnabled && editEnabled.checked);
 
-        noteSave.disabled = true;
-        noteCancel.disabled = true;
-        noteClose.disabled = true;
-        if (noteClear) noteClear.disabled = true;
-        statusEl.textContent = "Clearing note...";
-        try {
+	        noteSave.disabled = true;
+	        noteCancel.disabled = true;
+	        noteClose.disabled = true;
+	        if (noteClear) noteClear.disabled = true;
+	        statusEl.textContent = "Clearing note...";
+	        if (noteMsg) noteMsg.textContent = "Clearing…";
+	        if (noteErr) noteErr.textContent = "";
+	        try {
           const payload = { account_label: noteLabel, expected_email: emailText, enabled, note: "" };
           const res = await fetch("/accounts/patch", {
             method: "POST",
@@ -874,13 +896,15 @@ UI_HTML = """<!doctype html>
           await loadLatest();
           lastUpdateText = `Note cleared — ${new Date().toLocaleTimeString()}`;
           renderFromCache();
-        } catch (e) {
-          statusEl.textContent = `Note clear error: ${e}`;
-        } finally {
-          noteSave.disabled = false;
-          noteCancel.disabled = false;
-          noteClose.disabled = false;
-          if (noteClear) noteClear.disabled = false;
+	        } catch (e) {
+	          statusEl.textContent = `Note clear error: ${e}`;
+	          if (noteMsg) noteMsg.textContent = "";
+	          if (noteErr) noteErr.textContent = String(e || "");
+	        } finally {
+	          noteSave.disabled = false;
+	          noteCancel.disabled = false;
+	          noteClose.disabled = false;
+	          if (noteClear) noteClear.disabled = false;
         }
       }
 
@@ -894,11 +918,13 @@ UI_HTML = """<!doctype html>
         const ok = confirm(msg);
         if (!ok) return;
 
-        removeDo.disabled = true;
-        removeCancel.disabled = true;
-        removeClose.disabled = true;
-        statusEl.textContent = "Removing account...";
-        try {
+	        removeDo.disabled = true;
+	        removeCancel.disabled = true;
+	        removeClose.disabled = true;
+	        statusEl.textContent = "Removing account...";
+	        if (removeMsg) removeMsg.textContent = "Removing…";
+	        if (removeErr) removeErr.textContent = "";
+	        try {
           const target = removeLabel;
           const payload = {
             account_label: target,
@@ -934,13 +960,15 @@ UI_HTML = """<!doctype html>
           const extra = (removedMsg || missingMsg) ? ` (${[removedMsg, missingMsg].filter(Boolean).join(" ")})` : "";
           lastUpdateText = `Removed — ${new Date().toLocaleTimeString()}${extra}`;
           renderFromCache();
-        } catch (e) {
-          statusEl.textContent = `Remove error: ${e}`;
-        } finally {
-          removeDo.disabled = false;
-          removeCancel.disabled = false;
-          removeClose.disabled = false;
-        }
+	        } catch (e) {
+	          statusEl.textContent = `Remove error: ${e}`;
+	          if (removeMsg) removeMsg.textContent = "";
+	          if (removeErr) removeErr.textContent = String(e || "");
+	        } finally {
+	          removeDo.disabled = false;
+	          removeCancel.disabled = false;
+	          removeClose.disabled = false;
+	        }
       }
 
       function extractEmails(text) {
@@ -1040,6 +1068,7 @@ UI_HTML = """<!doctype html>
         const regNote = reg ? (reg.note || "") : "";
 
         const email = norm.account_email || norm.expected_email || regEmail || "";
+        const apiKeyHint = String(norm.api_key_hint || "").trim();
         const plan = norm.account_planType || norm.rate_planType || norm.expected_planType || regPlan || "";
         const model = (parsed && parsed.model) || norm.model || "";
         const lastUpdate = item.ts || "";
@@ -1061,16 +1090,21 @@ UI_HTML = """<!doctype html>
         else state = pill("ok", true);
 
         const expectedMatch = norm.expected_email_match;
-        let accountLineHtml = esc(safe(email, isApiProvider ? "(api key)" : "(unknown)"));
+        const accountMain = email ? email : (isApiProvider ? (apiKeyHint || "(api key)") : "(unknown)");
+        let accountLineHtml = esc(safe(accountMain, "-"));
         if (!norm.account_email && (norm.expected_email || regEmail)) {
           accountLineHtml += " " + pill("expected", true);
         } else if (typeof expectedMatch === "boolean") {
           accountLineHtml += " " + (expectedMatch ? pill("email ok", true) : pill("email mismatch", false));
         }
+        if (isApiProvider && apiKeyHint && email) {
+          accountLineHtml += `<span class="muted"> · ${esc(apiKeyHint)}</span>`;
+        }
 
         const accountTitleParts = [];
         if (label) accountTitleParts.push(label);
         if (email) accountTitleParts.push(email);
+        if (apiKeyHint) accountTitleParts.push(apiKeyHint);
         if (regNote) accountTitleParts.push(regNote);
         const accountTitle = accountTitleParts.join(" · ");
         let accountHtml = `<a class="mono" href="${detailsHref}" title="${esc(accountTitle)}">${accountLineHtml}${regNote ? `<span class="muted"> · ${esc(regNote)}</span>` : ""}</a>`;
@@ -1242,8 +1276,9 @@ UI_HTML = """<!doctype html>
 	          ? inView.filter((it) => {
 	              const parsed = it.parsed || {};
 	              const norm = parsed.normalized || {};
-	              const reg = it.registry || {};
+              const reg = it.registry || {};
               const email = (norm.account_email || norm.expected_email || reg.expected_email || "").toLowerCase();
+              const keyHint = (norm.api_key_hint || "").toLowerCase();
               const provider = (reg.provider || norm.provider || "").toLowerCase();
               const note = (reg.note || "").toLowerCase();
               const model = (parsed.model || norm.model || "").toLowerCase();
@@ -1251,11 +1286,12 @@ UI_HTML = """<!doctype html>
 	              return (
 	                label.includes(q) ||
 	                email.includes(q) ||
+	                keyHint.includes(q) ||
 	                provider.includes(q) ||
 	                note.includes(q) ||
 	                model.includes(q)
 	              );
-	            })
+            })
 	          : inView;
 
 	        const sorted = sortKey ? [...filtered].sort(_sortComparator) : filtered;
@@ -1742,11 +1778,7 @@ def ui():
     return HTMLResponse(UI_HTML, headers={"Cache-Control": "no-store, max-age=0"})
 
 
-@app.post("/refresh")
-def refresh_now(label: str | None = None, include_disabled: bool = False):
-    if not REFRESHER_REFRESH_URL:
-        raise HTTPException(status_code=501, detail="refresher is disabled")
-
+def _build_refresher_refresh_url(label: str | None, include_disabled: bool) -> str:
     url = REFRESHER_REFRESH_URL
     params: dict[str, str] = {}
     if label:
@@ -1755,12 +1787,24 @@ def refresh_now(label: str | None = None, include_disabled: bool = False):
         params["include_disabled"] = "true"
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
+    return url
+
+
+def _call_refresher_refresh(label: str | None, include_disabled: bool) -> dict:
+    url = _build_refresher_refresh_url(label=label, include_disabled=include_disabled)
+    req = urllib.request.Request(url, data=b"", method="POST")
+    with urllib.request.urlopen(req, timeout=REFRESH_TIMEOUT_SEC) as resp:
+        body = resp.read().decode("utf-8")
+        return json.loads(body) if body else {"ok": True}
+
+
+@app.post("/refresh")
+def refresh_now(label: str | None = None, include_disabled: bool = False):
+    if not REFRESHER_REFRESH_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
 
     try:
-        req = urllib.request.Request(url, data=b"", method="POST")
-        with urllib.request.urlopen(req, timeout=REFRESH_TIMEOUT_SEC) as resp:
-            body = resp.read().decode("utf-8")
-            return json.loads(body) if body else {"ok": True}
+        return _call_refresher_refresh(label=label, include_disabled=include_disabled)
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         try:
@@ -1773,6 +1817,32 @@ def refresh_now(label: str | None = None, include_disabled: bool = False):
         raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.post("/refresh_async")
+def refresh_async(label: str | None = None, include_disabled: bool = False):
+    if not REFRESHER_REFRESH_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    started_at = _now_iso()
+    key = label or "__all__"
+    with _refresh_async_lock:
+        if key in _refresh_async_inflight:
+            return {"ok": True, "queued": False, "already_running": True, "label": label, "started_at": started_at}
+        _refresh_async_inflight[key] = started_at
+
+    def _runner():
+        try:
+            _call_refresher_refresh(label=label, include_disabled=include_disabled)
+        except Exception:
+            pass
+        finally:
+            with _refresh_async_lock:
+                _refresh_async_inflight.pop(key, None)
+
+    t = threading.Thread(target=_runner, name=f"refresh_async:{key}", daemon=True)
+    t.start()
+    return {"ok": True, "queued": True, "label": label, "started_at": started_at}
 
 
 @app.post("/accounts/add")

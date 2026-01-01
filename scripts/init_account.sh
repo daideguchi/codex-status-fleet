@@ -46,6 +46,9 @@ try:
         for a in cfg.get("accounts", []):
             if not isinstance(a, dict):
                 continue
+            provider = (a.get("provider") or "codex").strip().lower()
+            if provider not in ("codex", "openai_codex", "openai"):
+                continue
             exp = (a.get("expected_email") or "").strip().lower()
             if exp and exp == email:
                 l = (a.get("label") or "").strip()
@@ -80,5 +83,11 @@ fi
 
 label_q="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${label}" 2>/dev/null || true)"
 if [[ "${label_q}" != "" ]] && command -v curl >/dev/null 2>&1; then
-  curl -fsS -X POST "http://localhost:8080/refresh?label=${label_q}" >/dev/null 2>&1 || true
+  # Trigger a refresh without blocking the login flow. (Refresh can take 10s+ across many accounts.)
+  # Prefer /refresh_async when available; fall back to /refresh but with a short timeout.
+  (
+    curl -fsS -X POST "http://localhost:8080/refresh_async?label=${label_q}" >/dev/null 2>&1 \
+      || curl -fsS -m 2 -X POST "http://localhost:8080/refresh?label=${label_q}" >/dev/null 2>&1 \
+      || true
+  ) &
 fi

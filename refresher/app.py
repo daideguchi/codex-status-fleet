@@ -115,6 +115,19 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _mask_secret(value: str, keep_start: int = 10, keep_end: int = 6) -> str:
+    s = (value or "").strip()
+    if not s:
+        return ""
+    if keep_start < 0:
+        keep_start = 0
+    if keep_end < 0:
+        keep_end = 0
+    if len(s) <= keep_start + keep_end + 1:
+        return s
+    return s[:keep_start] + "…" + s[-keep_end:]
+
+
 def _epoch_to_iso(epoch_s: int | None) -> str | None:
     if epoch_s is None:
         return None
@@ -1679,7 +1692,17 @@ def _refresh_one_codex(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
             message = str(error_payload.get("message") or "")
         if not message:
             message = str(e)
-        requires_auth = "authentication required" in message.lower()
+        ml = message.lower()
+        requires_auth = (
+            ("authentication required" in ml)
+            or ("unauthorized" in ml)
+            or ("token_invalidated" in ml)
+            or ("token invalidated" in ml)
+            or ("token has been invalidated" in ml)
+            or ("please try signing in again" in ml)
+            or ("try signing in again" in ml)
+            or ("sign in again" in ml)
+        )
 
         parsed = {
             "probe_error": True,
@@ -1752,6 +1775,7 @@ def _refresh_one_anthropic(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
             if k.startswith("anthropic-ratelimit-") or k in ("retry-after", "date", "request-id")
         }
         normalized = _normalize_anthropic(http_status=http_status, headers=headers, expected=acc)
+        normalized["api_key_hint"] = _mask_secret(api_key, keep_start=12, keep_end=6)
         normalized["model"] = model
 
         raw = json.dumps(
@@ -1787,6 +1811,7 @@ def _refresh_one_anthropic(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
                 "expected_planType_match": None,
                 "windows": {},
                 "model": model,
+                "api_key_hint": _mask_secret(api_key, keep_start=12, keep_end=6),
             },
         }
         state = "error"
@@ -1846,6 +1871,7 @@ def _refresh_one_fireworks(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
             if k.startswith("x-ratelimit-") or k in ("retry-after", "date", "request-id")
         }
         normalized = _normalize_fireworks(http_status=http_status, headers=headers, expected=acc)
+        normalized["api_key_hint"] = _mask_secret(api_key, keep_start=10, keep_end=6)
         if model:
             normalized["model"] = model
         if base_url:
@@ -1898,6 +1924,7 @@ def _refresh_one_fireworks(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
                 "windows": {},
                 "model": model,
                 "base_url": base_url,
+                "api_key_hint": _mask_secret(api_key, keep_start=10, keep_end=6),
             },
         }
         state = "error"

@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import re
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
@@ -69,9 +71,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Show which accounts have auth.json saved.")
     parser.add_argument("--config", required=True, help="Path to accounts.json")
     parser.add_argument(
+        "--collector",
+        default="http://localhost:8080",
+        help="Collector base URL (default: http://localhost:8080)",
+    )
+    parser.add_argument(
         "--need-login",
         action="store_true",
         help="Print labels that need login (one per line) and exit.",
+    )
+    parser.add_argument(
+        "--need-login-latest",
+        action="store_true",
+        help="Print labels that need re-login based on /latest (one per line) and exit.",
     )
     parser.add_argument(
         "--need-auth",
@@ -143,6 +155,43 @@ def main() -> int:
         for it in rows:
             if it.get("provider") == "codex" and it.get("enabled") and not it.get("logged_in"):
                 print(it.get("label") or "")
+        return 0
+
+    if args.need_login_latest:
+        base = (args.collector or "").strip().rstrip("/")
+        if not base:
+            raise SystemExit("--collector is required")
+        url = f"{base}/latest"
+        try:
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                latest = json.load(resp)
+        except urllib.error.URLError as e:
+            raise SystemExit(f"failed to fetch {url}: {e}") from e
+
+        items = latest.get("items", []) if isinstance(latest, dict) else []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            label = (it.get("account_label") or "").strip()
+            if not label:
+                continue
+            registry = it.get("registry") if isinstance(it.get("registry"), dict) else {}
+            parsed = it.get("parsed") if isinstance(it.get("parsed"), dict) else {}
+            norm = parsed.get("normalized") if isinstance(parsed.get("normalized"), dict) else {}
+
+            provider = (registry.get("provider") or norm.get("provider") or "codex").strip().lower()
+            if provider not in ("codex", "openai_codex", "openai"):
+                continue
+            if registry.get("enabled") is False:
+                continue
+
+            requires_auth = bool(norm.get("requiresAuth") or norm.get("requiresOpenaiAuth"))
+            if not requires_auth:
+                err = str(parsed.get("error") or "")
+                ml = err.lower()
+                requires_auth = ("token_invalidated" in ml) or ("authentication token has been invalidated" in ml)
+            if requires_auth:
+                print(label)
         return 0
 
     if args.need_auth:
