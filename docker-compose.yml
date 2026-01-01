@@ -5,8 +5,11 @@ services:
       dockerfile: docker/Dockerfile.collector
     environment:
       - DB_PATH=/data/status.db
+      - ENABLE_DOCKER_CONTROL=${ENABLE_DOCKER_CONTROL:-true}
+      - DOCKER_SOCK=/var/run/docker.sock
     volumes:
       - ./data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "127.0.0.1:8080:8080"
       - "[::1]:8080:8080"

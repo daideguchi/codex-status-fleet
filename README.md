@@ -186,6 +186,12 @@ python3 scripts/add_accounts.py --config accounts.json --in emails.txt --plan pl
 - 特定アカウント: `docker compose -f docker-compose.yml -f docker-compose.accounts.yml logs -f agent_acc1`
 - 停止: `docker compose -f docker-compose.yml -f docker-compose.accounts.yml down`
 
+UI から止めたい場合:
+
+- `http://localhost:8080/` の **Stop** ボタンで、Fleet のコンテナ（collector/refresher/agents）を停止できます
+  - Docker ソケット（`/var/run/docker.sock`）越しに停止するため、ローカル運用前提です
+  - 無効化したい場合は `docker-compose.yml` の `ENABLE_DOCKER_CONTROL` を `false` にしてください
+
 ショートカット:
 
 - `./scripts/down.sh`

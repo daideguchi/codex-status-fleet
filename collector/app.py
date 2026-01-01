@@ -1,7 +1,9 @@
 import json
 import os
 import sqlite3
+import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,6 +19,12 @@ REFRESHER_BASE_URL = os.getenv(
     "REFRESHER_BASE_URL", REFRESHER_REFRESH_URL.rsplit("/", 1)[0]
 ).rstrip("/")
 REFRESH_TIMEOUT_SEC = float(os.getenv("REFRESH_TIMEOUT_SEC", "180"))
+DOCKER_SOCK = os.getenv("DOCKER_SOCK", "/var/run/docker.sock")
+ENABLE_DOCKER_CONTROL = os.getenv("ENABLE_DOCKER_CONTROL", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 app = FastAPI(title="Codex Status Collector")
 
@@ -94,6 +102,7 @@ UI_HTML = """<!doctype html>
     </div>
 	    <div class="toolbar">
 	      <button id="refresh">Update now</button>
+	      <button id="stopApp" class="danger" title="Stop all Fleet containers (Docker)">Stop</button>
 	      <button id="add">Add accounts</button>
 	      <button id="addKeys">Add Claude keys</button>
 	      <button id="addFw">Add Fireworks keys</button>
@@ -276,13 +285,14 @@ UI_HTML = """<!doctype html>
 	    </div>
 	    <script>
 	      const $ = (id) => document.getElementById(id);
-      const rowsEl = $("rows");
-      const statusEl = $("status");
-	      const summaryEl = $("summary");
-	      const refreshBtn = $("refresh");
-	      const addBtn = $("add");
-	      const addKeysBtn = $("addKeys");
-	      const addFwBtn = $("addFw");
+	      const rowsEl = $("rows");
+	      const statusEl = $("status");
+		      const summaryEl = $("summary");
+		      const refreshBtn = $("refresh");
+		      const stopBtn = $("stopApp");
+		      const addBtn = $("add");
+		      const addKeysBtn = $("addKeys");
+		      const addFwBtn = $("addFw");
 	      const viewModeEl = $("viewMode");
 	      const resetSortBtn = $("resetSort");
 	      const filterEl = $("filter");
@@ -1527,6 +1537,42 @@ UI_HTML = """<!doctype html>
         }
       }
 
+      async function stopApp() {
+        const ok = confirm("Stop Codex Status Fleet now?\\n\\nStart again: ./scripts/up.sh\\nIf this fails: ./scripts/down.sh");
+        if (!ok) return;
+
+        try { if (stopBtn) stopBtn.disabled = true; } catch {}
+        try { if (refreshBtn) refreshBtn.disabled = true; } catch {}
+        statusEl.textContent = "Stopping…";
+        try {
+          const res = await fetch("/admin/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ confirm: "STOP" }),
+          });
+          let body = null;
+          try { body = await res.json(); } catch {}
+          if (!res.ok) {
+            const msg = (body && (body.detail || body.error)) ? (body.detail || body.error) : `HTTP ${res.status}`;
+            throw new Error(msg);
+          }
+          statusEl.textContent = "Stopping… (this page will go offline)";
+
+          setTimeout(async () => {
+            try {
+              const r = await fetch("/healthz", { cache: "no-store" });
+              if (r.ok) statusEl.textContent = "Stop requested. If still running, use ./scripts/down.sh";
+            } catch {
+              statusEl.textContent = "Stopped.";
+            }
+          }, 1200);
+        } catch (e) {
+          statusEl.textContent = `Stop error: ${e}`;
+          try { if (stopBtn) stopBtn.disabled = false; } catch {}
+          try { if (refreshBtn) refreshBtn.disabled = false; } catch {}
+        }
+      }
+
       function isReloadNavigation() {
         try {
           const entries = (performance.getEntriesByType && performance.getEntriesByType("navigation")) || [];
@@ -1538,19 +1584,20 @@ UI_HTML = """<!doctype html>
       }
 
 	      const theadEl = document.querySelector("thead");
-	      theadEl.addEventListener("click", (ev) => {
-	        const t = ev.target;
-	        const th = t && t.closest ? t.closest("th.sortable") : null;
-	        if (!th) return;
-	        const k = th.getAttribute("data-sort");
-	        if (!k) return;
-	        setSort(k);
-	      });
+		      theadEl.addEventListener("click", (ev) => {
+		        const t = ev.target;
+		        const th = t && t.closest ? t.closest("th.sortable") : null;
+		        if (!th) return;
+		        const k = th.getAttribute("data-sort");
+		        if (!k) return;
+		        setSort(k);
+		      });
 
-	      refreshBtn.addEventListener("click", updateNow);
-      addBtn.addEventListener("click", () => { setKeysModalOpen(false); setFwModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setModalOpen(true); });
-      addKeysBtn.addEventListener("click", () => { setModalOpen(false); setFwModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setKeysModalOpen(true); });
-      addFwBtn.addEventListener("click", () => { setModalOpen(false); setKeysModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setFwModalOpen(true); });
+		      refreshBtn.addEventListener("click", updateNow);
+		      if (stopBtn) stopBtn.addEventListener("click", stopApp);
+	      addBtn.addEventListener("click", () => { setKeysModalOpen(false); setFwModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setModalOpen(true); });
+	      addKeysBtn.addEventListener("click", () => { setModalOpen(false); setFwModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setKeysModalOpen(true); });
+	      addFwBtn.addEventListener("click", () => { setModalOpen(false); setKeysModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setFwModalOpen(true); });
       addClose.addEventListener("click", () => setModalOpen(false));
       addCancel.addEventListener("click", () => setModalOpen(false));
       addSubmit.addEventListener("click", addAccounts);
@@ -1648,6 +1695,105 @@ UI_HTML = """<!doctype html>
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _decode_chunked_body(data: bytes) -> bytes:
+    out = bytearray()
+    i = 0
+    n = len(data)
+    while i < n:
+        j = data.find(b"\r\n", i)
+        if j < 0:
+            break
+        size_raw = data[i:j].split(b";", 1)[0].strip()
+        try:
+            size = int(size_raw, 16) if size_raw else 0
+        except Exception:
+            break
+        i = j + 2
+        if size == 0:
+            break
+        if i + size > n:
+            break
+        out += data[i : i + size]
+        i += size + 2  # chunk + CRLF
+    return bytes(out)
+
+
+def _docker_http_request(
+    method: str,
+    path: str,
+    body: bytes | None = None,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, dict[str, str], bytes]:
+    if not os.path.exists(DOCKER_SOCK):
+        raise RuntimeError(f"docker socket not available: {DOCKER_SOCK}")
+
+    h = {k.lower(): v for (k, v) in (headers or {}).items()}
+    if body is None:
+        body = b""
+    if "host" not in h:
+        h["host"] = "docker"
+    if "user-agent" not in h:
+        h["user-agent"] = "codex-status-fleet/collector"
+    if "connection" not in h:
+        h["connection"] = "close"
+    if "content-length" not in h:
+        h["content-length"] = str(len(body))
+
+    req = bytearray()
+    req += f"{method} {path} HTTP/1.1\r\n".encode("utf-8")
+    for k, v in h.items():
+        req += f"{k}: {v}\r\n".encode("utf-8")
+    req += b"\r\n"
+    req += body
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(5.0)
+    try:
+        sock.connect(DOCKER_SOCK)
+        sock.sendall(bytes(req))
+        chunks: list[bytes] = []
+        while True:
+            part = sock.recv(65536)
+            if not part:
+                break
+            chunks.append(part)
+        raw = b"".join(chunks)
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+    head, sep, body_raw = raw.partition(b"\r\n\r\n")
+    if not sep:
+        raise RuntimeError("invalid docker response")
+
+    lines = head.decode("iso-8859-1", errors="replace").split("\r\n")
+    if not lines:
+        raise RuntimeError("invalid docker response")
+
+    status_line = lines[0].strip()
+    parts = status_line.split(" ", 2)
+    if len(parts) < 2:
+        raise RuntimeError(f"invalid docker status line: {status_line}")
+    try:
+        status = int(parts[1])
+    except Exception as e:
+        raise RuntimeError(f"invalid docker status code: {status_line}") from e
+
+    resp_headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        resp_headers[k.strip().lower()] = v.strip()
+
+    if resp_headers.get("transfer-encoding", "").lower() == "chunked":
+        body_raw = _decode_chunked_body(body_raw)
+
+    return status, resp_headers, body_raw
 
 
 def _init_db() -> None:
@@ -1769,6 +1915,10 @@ class PatchAccountPayload(BaseModel):
     note: str | None = None
 
 
+class StopAppPayload(BaseModel):
+    confirm: str | None = None
+
+
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
@@ -1776,6 +1926,123 @@ def healthz():
 @app.get("/", response_class=HTMLResponse)
 def ui():
     return HTMLResponse(UI_HTML, headers={"Cache-Control": "no-store, max-age=0"})
+
+
+@app.post("/admin/stop")
+def admin_stop(payload: StopAppPayload):
+    """
+    Stop the running Docker Compose project (collector/refresher/agents) via the Docker Engine socket.
+
+    Notes:
+    - Only works when the collector container has access to /var/run/docker.sock.
+    - This is intended for local-only setups (ports bound to 127.0.0.1).
+    """
+    if not ENABLE_DOCKER_CONTROL:
+        raise HTTPException(
+            status_code=503,
+            detail="docker control disabled (set ENABLE_DOCKER_CONTROL=true). You can stop from terminal: ./scripts/down.sh",
+        )
+    if not os.path.exists(DOCKER_SOCK):
+        raise HTTPException(
+            status_code=503,
+            detail=f"docker socket not mounted: {DOCKER_SOCK}. Stop from terminal: ./scripts/down.sh",
+        )
+
+    if (payload.confirm or "").strip().upper() != "STOP":
+        raise HTTPException(status_code=400, detail='confirm must be "STOP"')
+
+    self_id = (os.getenv("HOSTNAME") or "").strip()
+    if not self_id:
+        raise HTTPException(status_code=500, detail="cannot determine container id (HOSTNAME is empty)")
+
+    st, _, body = _docker_http_request("GET", f"/containers/{urllib.parse.quote(self_id)}/json")
+    if st != 200:
+        raise HTTPException(status_code=502, detail=f"docker inspect failed: HTTP {st}")
+    try:
+        info = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"docker inspect parse failed: {e}") from e
+
+    labels = (((info.get("Config") or {}).get("Labels") or {}) if isinstance(info, dict) else {}) or {}
+    project = (labels.get("com.docker.compose.project") or "").strip()
+    if not project:
+        raise HTTPException(status_code=500, detail="not a compose container (missing com.docker.compose.project)")
+
+    filters = {"label": [f"com.docker.compose.project={project}"]}
+    filt_q = urllib.parse.quote(json.dumps(filters, separators=(",", ":")))
+    st, _, body = _docker_http_request("GET", f"/containers/json?all=1&filters={filt_q}")
+    if st != 200:
+        raise HTTPException(status_code=502, detail=f"docker list failed: HTTP {st}")
+    try:
+        containers = json.loads(body.decode("utf-8", errors="replace")) if body else []
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"docker list parse failed: {e}") from e
+    if not isinstance(containers, list):
+        raise HTTPException(status_code=502, detail="docker list returned non-array")
+
+    self_full_id: str | None = None
+    collector_id: str | None = None
+    targets: list[dict[str, str]] = []
+    for c in containers:
+        if not isinstance(c, dict):
+            continue
+        cid = (c.get("Id") or "").strip()
+        if not cid:
+            continue
+        clabels = c.get("Labels") if isinstance(c.get("Labels"), dict) else {}
+        service = (clabels.get("com.docker.compose.service") or "").strip()
+        names = c.get("Names") if isinstance(c.get("Names"), list) else []
+        name = str(names[0]) if names else ""
+
+        if cid.startswith(self_id) or self_id.startswith(cid[:12]):
+            self_full_id = cid
+        if service == "collector":
+            collector_id = cid
+
+        targets.append({"id": cid, "service": service, "name": name})
+
+    def _rank(svc: str) -> int:
+        s = (svc or "").strip().lower()
+        if s.startswith("agent"):
+            return 0
+        if s == "refresher":
+            return 1
+        if s == "collector":
+            return 2
+        return 3
+
+    targets.sort(key=lambda t: (_rank(t.get("service", "")), t.get("service", ""), t.get("name", ""), t.get("id", "")))
+
+    stopped: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+
+    # Stop everything except collector (stop collector last, after responding).
+    for t in targets:
+        cid = t.get("id") or ""
+        svc = t.get("service") or ""
+        if not cid:
+            continue
+        if cid == collector_id or cid == self_full_id:
+            continue
+
+        st2, _, _ = _docker_http_request("POST", f"/containers/{cid}/stop?t=10")
+        if st2 in (204, 304):
+            stopped.append({"service": svc or "-", "id": cid[:12], "name": t.get("name") or ""})
+        else:
+            errors.append({"service": svc or "-", "id": cid[:12], "error": f"HTTP {st2}"})
+
+    stop_id = collector_id or self_full_id or self_id
+
+    def _stop_self_later(cid: str) -> None:
+        time.sleep(0.6)
+        try:
+            _docker_http_request("POST", f"/containers/{cid}/stop?t=10")
+        except Exception:
+            pass
+
+    threading.Thread(target=_stop_self_later, args=(stop_id,), daemon=True).start()
+
+    return {"ok": True, "project": project, "stopped": stopped, "errors": errors, "stopping": True}
 
 
 def _build_refresher_refresh_url(label: str | None, include_disabled: bool) -> str:
