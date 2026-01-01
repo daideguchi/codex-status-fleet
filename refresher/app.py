@@ -5,6 +5,7 @@ import json
 import os
 import re
 import select
+import shutil
 import socket
 import subprocess
 import threading
@@ -66,9 +67,11 @@ def _collector_base_url() -> str:
 
 def _push_registry_from_config() -> None:
     cfg = _read_json(Path(CONFIG_PATH))
-    accounts = cfg.get("accounts") or []
-    if not isinstance(accounts, list) or not accounts:
-        raise RuntimeError("config.accounts must be a non-empty array")
+    accounts = cfg.get("accounts")
+    if accounts is None:
+        accounts = []
+    if not isinstance(accounts, list):
+        raise RuntimeError("config.accounts must be an array")
 
     payload_accounts: list[dict[str, Any]] = []
     for acc in accounts:
@@ -91,7 +94,7 @@ def _push_registry_from_config() -> None:
             }
         )
 
-    if not payload_accounts:
+    if accounts and not payload_accounts:
         raise RuntimeError("No valid accounts found in config")
 
     base = _collector_base_url()
@@ -765,6 +768,17 @@ class AppendNotePayload(BaseModel):
     replace: bool = False
 
 
+class SetNotePayload(BaseModel):
+    label: str
+    note: str | None = None
+
+
+class RemoveAccountsPayload(BaseModel):
+    labels: list[str] = Field(default_factory=list)
+    label: str | None = None
+    delete_local_data: bool = False
+
+
 @app.post("/config/add_accounts")
 def config_add_accounts(payload: AddAccountsPayload):
     config_path = Path(CONFIG_PATH)
@@ -925,6 +939,157 @@ def config_note_append(payload: AppendNotePayload):
             raise HTTPException(status_code=502, detail=f"failed to push registry: {e}") from e
 
     return {"ok": True, "label": label, "note": new_note}
+
+
+@app.post("/config/note_set")
+def config_note_set(payload: SetNotePayload):
+    config_path = Path(CONFIG_PATH)
+    if not config_path.exists() or not config_path.is_file():
+        raise HTTPException(status_code=500, detail=f"config not found: {CONFIG_PATH}")
+
+    label = (payload.label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label is required")
+
+    note = (payload.note or "").strip()
+
+    with _config_lock:
+        with _refresh_cond:
+            if _refresh_running:
+                ok = _refresh_cond.wait_for(
+                    lambda: not _refresh_running, timeout=REFRESH_JOIN_TIMEOUT_SEC
+                )
+                if not ok:
+                    raise HTTPException(status_code=409, detail="refresh already running")
+
+        cfg = _read_json(config_path)
+        accounts = cfg.get("accounts")
+        if not isinstance(accounts, list):
+            raise HTTPException(status_code=500, detail="config.accounts must be an array")
+
+        target: dict[str, Any] | None = None
+        for a in accounts:
+            if not isinstance(a, dict):
+                continue
+            if (a.get("label") or "").strip() == label:
+                target = a
+                break
+
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"label not found: {label}")
+
+        if note:
+            target["note"] = note
+        else:
+            target.pop("note", None)
+
+        _write_json_atomic(config_path, cfg)
+
+        try:
+            _push_registry_from_config()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"failed to push registry: {e}") from e
+
+    return {"ok": True, "label": label, "note": note}
+
+
+@app.post("/config/remove_accounts")
+def config_remove_accounts(payload: RemoveAccountsPayload):
+    config_path = Path(CONFIG_PATH)
+    if not config_path.exists() or not config_path.is_file():
+        raise HTTPException(status_code=500, detail=f"config not found: {CONFIG_PATH}")
+
+    labels_in: list[str] = []
+    if payload.label:
+        labels_in.append(payload.label)
+    labels_in.extend(payload.labels or [])
+
+    def norm_label(raw: str) -> str:
+        label = (raw or "").strip()
+        if not label:
+            return ""
+        if Path(label).name != label:
+            raise HTTPException(status_code=400, detail=f"invalid label: {label}")
+        return label
+
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for raw in labels_in:
+        label = norm_label(raw)
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        uniq.append(label)
+
+    if not uniq:
+        raise HTTPException(status_code=400, detail="labels must be non-empty")
+
+    removed: list[str] = []
+    missing: list[str] = []
+    deleted_local: list[str] = []
+    local_errors: dict[str, str] = {}
+
+    with _config_lock:
+        with _refresh_cond:
+            if _refresh_running:
+                ok = _refresh_cond.wait_for(
+                    lambda: not _refresh_running, timeout=REFRESH_JOIN_TIMEOUT_SEC
+                )
+                if not ok:
+                    raise HTTPException(status_code=409, detail="refresh already running")
+
+        cfg = _read_json(config_path)
+        accounts = cfg.get("accounts")
+        if not isinstance(accounts, list):
+            accounts = []
+            cfg["accounts"] = accounts
+
+        remove_set = set(uniq)
+        next_accounts: list[Any] = []
+        removed_set: set[str] = set()
+
+        for a in accounts:
+            if not isinstance(a, dict):
+                next_accounts.append(a)
+                continue
+            label = (a.get("label") or a.get("account_label") or "").strip()
+            if label and label in remove_set:
+                removed_set.add(label)
+                continue
+            next_accounts.append(a)
+
+        for label in uniq:
+            if label in removed_set:
+                removed.append(label)
+            else:
+                missing.append(label)
+
+        cfg["accounts"] = next_accounts
+        _write_json_atomic(config_path, cfg)
+
+        if payload.delete_local_data:
+            for label in removed:
+                try:
+                    account_home = Path(ACCOUNTS_DIR) / label
+                    if account_home.exists():
+                        shutil.rmtree(account_home)
+                    deleted_local.append(label)
+                except Exception as e:
+                    local_errors[label] = str(e)
+
+        try:
+            _push_registry_from_config()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"failed to push registry: {e}") from e
+
+    return {
+        "ok": True,
+        "removed": removed,
+        "missing": missing,
+        "deleted_local": deleted_local,
+        "local_errors": local_errors,
+        "remaining": len([a for a in (cfg.get("accounts") or []) if isinstance(a, dict)]),
+    }
 
 
 @app.post("/config/add_anthropic_keys")

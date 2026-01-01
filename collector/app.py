@@ -36,6 +36,8 @@ UI_HTML = """<!doctype html>
       .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
       button { padding: 5px 9px; border-radius: 8px; border: 1px solid #8884; background: #8882; cursor: pointer; }
       button:hover { background: #8883; }
+      button.danger { border-color: #d554; background: rgba(213, 85, 85, 0.12); }
+      button.danger:hover { background: rgba(213, 85, 85, 0.18); }
       input, textarea, select { padding: 5px 9px; border-radius: 8px; border: 1px solid #8884; background: #8881; }
       textarea { width: 100%; min-height: 140px; resize: vertical; }
       table { width: 100%; border-collapse: collapse; font-size: 11px; line-height: 1.0; }
@@ -211,7 +213,7 @@ UI_HTML = """<!doctype html>
 	          <h2>Edit note</h2>
 	          <button id="noteClose">Close</button>
 	        </div>
-	        <div class="small">Append a short comment to this account's note (saved into accounts.json + registry).</div>
+	        <div class="small">Append or overwrite note (saved into accounts.json + registry). You can also clear it.</div>
 	        <div style="height: 8px"></div>
 	        <div class="row">
 	          <span class="muted">Target</span>
@@ -221,14 +223,40 @@ UI_HTML = """<!doctype html>
 	        <div class="row">
 	          <label class="muted">Append <input id="noteAppend" placeholder="comment" /></label>
 	          <label class="muted">Separator <input id="noteSep" value=" · " /></label>
+	          <label class="muted"><input id="noteReplace" type="checkbox" /> overwrite</label>
 	        </div>
 	        <div style="height: 8px"></div>
 	        <div class="small muted">Current</div>
 	        <pre id="noteCurrent" class="mono small" style="white-space: pre-wrap; margin: 0;"></pre>
 	        <div style="height: 10px"></div>
 	        <div class="row" style="justify-content: flex-end;">
+	          <button id="noteClear" class="danger">Clear</button>
 	          <button id="noteCancel">Cancel</button>
 	          <button id="noteSave">Save</button>
+	        </div>
+	      </div>
+	    </div>
+	    <div id="removeModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
+	      <div class="card">
+	        <div class="row" style="justify-content: space-between;">
+	          <h2>Remove account</h2>
+	          <button id="removeClose">Close</button>
+	        </div>
+	        <div class="small">Remove this row from accounts.json + registry. Optional: delete local data / purge history.</div>
+	        <div style="height: 8px"></div>
+	        <div class="row">
+	          <span class="muted">Target</span>
+	          <span id="removeTarget" class="mono"></span>
+	        </div>
+	        <div style="height: 8px"></div>
+	        <div class="row">
+	          <label class="muted"><input id="removeLocal" type="checkbox" /> delete local data</label>
+	          <label class="muted"><input id="removePurge" type="checkbox" /> purge history</label>
+	        </div>
+	        <div style="height: 10px"></div>
+	        <div class="row" style="justify-content: flex-end;">
+	          <button id="removeCancel">Cancel</button>
+	          <button id="removeDo" class="danger">Remove</button>
 	        </div>
 	      </div>
 	    </div>
@@ -285,12 +313,22 @@ UI_HTML = """<!doctype html>
 		      const noteTarget = $("noteTarget");
 		      const noteAppend = $("noteAppend");
 		      const noteSep = $("noteSep");
+		      const noteReplace = $("noteReplace");
 		      const noteCurrent = $("noteCurrent");
+		      const noteClear = $("noteClear");
+		      const removeModal = $("removeModal");
+		      const removeClose = $("removeClose");
+		      const removeCancel = $("removeCancel");
+		      const removeDo = $("removeDo");
+		      const removeTarget = $("removeTarget");
+		      const removeLocal = $("removeLocal");
+		      const removePurge = $("removePurge");
 	      let cachedItems = [];
 	      let lastUpdateText = "";
 	      let refreshing = false;
 	      let viewMode = "all"; // all | subscription | credits
 	      let noteLabel = "";
+	      let removeLabel = "";
 	      let sortKey = null;
 	      let sortDir = "asc"; // asc | desc
 
@@ -657,6 +695,16 @@ UI_HTML = """<!doctype html>
         }
       }
 
+      function setRemoveModalOpen(open) {
+        if (open) {
+          removeModal.classList.add("open");
+          removeModal.setAttribute("aria-hidden", "false");
+        } else {
+          removeModal.classList.remove("open");
+          removeModal.setAttribute("aria-hidden", "true");
+        }
+      }
+
       function _findByLabel(label) {
         const items = Array.isArray(cachedItems) ? cachedItems : [];
         for (const it of items) {
@@ -677,11 +725,32 @@ UI_HTML = """<!doctype html>
         if (noteTarget) noteTarget.textContent = email ? `${noteLabel} (${email})` : noteLabel;
         if (noteCurrent) noteCurrent.textContent = note || "";
         if (noteAppend) noteAppend.value = "";
+        if (noteReplace) noteReplace.checked = false;
 
         setModalOpen(false);
         setKeysModalOpen(false);
         setFwModalOpen(false);
+        setRemoveModalOpen(false);
         setNoteModalOpen(true);
+      }
+
+      function openRemove(label) {
+        removeLabel = String(label || "");
+        const it = _findByLabel(removeLabel);
+        const parsed = it ? (it.parsed || {}) : {};
+        const norm = parsed.normalized || {};
+        const reg = it ? (it.registry || {}) : {};
+        const email = String(norm.account_email || norm.expected_email || reg.expected_email || "").trim();
+
+        if (removeTarget) removeTarget.textContent = email ? `${removeLabel} (${email})` : removeLabel;
+        if (removeLocal) removeLocal.checked = false;
+        if (removePurge) removePurge.checked = false;
+
+        setModalOpen(false);
+        setKeysModalOpen(false);
+        setFwModalOpen(false);
+        setNoteModalOpen(false);
+        setRemoveModalOpen(true);
       }
 
       async function saveNote() {
@@ -695,13 +764,14 @@ UI_HTML = """<!doctype html>
         noteSave.disabled = true;
         noteCancel.disabled = true;
         noteClose.disabled = true;
+        if (noteClear) noteClear.disabled = true;
         statusEl.textContent = "Saving note...";
         try {
           const payload = {
             account_label: noteLabel,
             append: text,
             separator: (noteSep.value || "").toString(),
-            replace: false,
+            replace: !!(noteReplace && noteReplace.checked),
           };
           const res = await fetch("/notes/append", {
             method: "POST",
@@ -726,6 +796,92 @@ UI_HTML = """<!doctype html>
           noteSave.disabled = false;
           noteCancel.disabled = false;
           noteClose.disabled = false;
+          if (noteClear) noteClear.disabled = false;
+        }
+      }
+
+      async function clearNote() {
+        if (!noteLabel) return;
+        const ok = confirm("Clear note for this account?");
+        if (!ok) return;
+
+        noteSave.disabled = true;
+        noteCancel.disabled = true;
+        noteClose.disabled = true;
+        if (noteClear) noteClear.disabled = true;
+        statusEl.textContent = "Clearing note...";
+        try {
+          const payload = { account_label: noteLabel, note: "" };
+          const res = await fetch("/notes/set", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          let body = null;
+          try { body = await res.json(); } catch {}
+          if (!res.ok) {
+            const msg = (body && (body.detail || body.error)) ? (body.detail || body.error) : `HTTP ${res.status}`;
+            throw new Error(msg);
+          }
+
+          setNoteModalOpen(false);
+          noteLabel = "";
+          await loadLatest();
+          lastUpdateText = `Note cleared — ${new Date().toLocaleTimeString()}`;
+          renderFromCache();
+        } catch (e) {
+          statusEl.textContent = `Note clear error: ${e}`;
+        } finally {
+          noteSave.disabled = false;
+          noteCancel.disabled = false;
+          noteClose.disabled = false;
+          if (noteClear) noteClear.disabled = false;
+        }
+      }
+
+      async function removeAccount() {
+        if (!removeLabel) return;
+        const delLocal = !!(removeLocal && removeLocal.checked);
+        const purge = !!(removePurge && removePurge.checked);
+        const msg = (delLocal || purge)
+          ? "Remove this account? (local data / history deletion is irreversible)"
+          : "Remove this account from the list?";
+        const ok = confirm(msg);
+        if (!ok) return;
+
+        removeDo.disabled = true;
+        removeCancel.disabled = true;
+        removeClose.disabled = true;
+        statusEl.textContent = "Removing account...";
+        try {
+          const payload = {
+            account_label: removeLabel,
+            delete_local_data: delLocal,
+            purge_history: purge,
+          };
+          const res = await fetch("/accounts/remove", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          let body = null;
+          try { body = await res.json(); } catch {}
+          if (!res.ok) {
+            const msg = (body && (body.detail || body.error)) ? (body.detail || body.error) : `HTTP ${res.status}`;
+            throw new Error(msg);
+          }
+
+          setRemoveModalOpen(false);
+          removeLabel = "";
+          await loadLatest();
+          lastUpdateText = `Removed — ${new Date().toLocaleTimeString()}`;
+          renderFromCache();
+        } catch (e) {
+          statusEl.textContent = `Remove error: ${e}`;
+        } finally {
+          removeDo.disabled = false;
+          removeCancel.disabled = false;
+          removeClose.disabled = false;
         }
       }
 
@@ -1001,6 +1157,7 @@ UI_HTML = """<!doctype html>
             <td>
               <button class="tablebtn" title="Update" aria-label="Update" data-action="update" data-label="${encodeURIComponent(safe(item.account_label))}">↻</button>
               <button class="tablebtn" title="Note" aria-label="Note" data-action="note" data-label="${encodeURIComponent(safe(item.account_label))}">✎</button>
+              <button class="tablebtn danger" title="Remove" aria-label="Remove" data-action="remove" data-label="${encodeURIComponent(safe(item.account_label))}">✕</button>
             </td>
           </tr>
         `;
@@ -1297,9 +1454,9 @@ UI_HTML = """<!doctype html>
 	      });
 
 	      refreshBtn.addEventListener("click", updateNow);
-      addBtn.addEventListener("click", () => { setKeysModalOpen(false); setFwModalOpen(false); setModalOpen(true); });
-      addKeysBtn.addEventListener("click", () => { setModalOpen(false); setFwModalOpen(false); setKeysModalOpen(true); });
-      addFwBtn.addEventListener("click", () => { setModalOpen(false); setKeysModalOpen(false); setFwModalOpen(true); });
+      addBtn.addEventListener("click", () => { setKeysModalOpen(false); setFwModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setModalOpen(true); });
+      addKeysBtn.addEventListener("click", () => { setModalOpen(false); setFwModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setKeysModalOpen(true); });
+      addFwBtn.addEventListener("click", () => { setModalOpen(false); setKeysModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setFwModalOpen(true); });
       addClose.addEventListener("click", () => setModalOpen(false));
       addCancel.addEventListener("click", () => setModalOpen(false));
       addSubmit.addEventListener("click", addAccounts);
@@ -1324,8 +1481,15 @@ UI_HTML = """<!doctype html>
       noteClose.addEventListener("click", () => setNoteModalOpen(false));
       noteCancel.addEventListener("click", () => setNoteModalOpen(false));
       noteSave.addEventListener("click", saveNote);
+      if (noteClear) noteClear.addEventListener("click", clearNote);
       noteModal.addEventListener("click", (ev) => {
         if (ev.target === noteModal) setNoteModalOpen(false);
+      });
+      removeClose.addEventListener("click", () => setRemoveModalOpen(false));
+      removeCancel.addEventListener("click", () => setRemoveModalOpen(false));
+      removeDo.addEventListener("click", removeAccount);
+      removeModal.addEventListener("click", (ev) => {
+        if (ev.target === removeModal) setRemoveModalOpen(false);
       });
       document.addEventListener("keydown", (ev) => {
         if (ev.key !== "Escape") return;
@@ -1333,6 +1497,7 @@ UI_HTML = """<!doctype html>
         if (keysModal.classList.contains("open")) setKeysModalOpen(false);
         if (fwModal.classList.contains("open")) setFwModalOpen(false);
         if (noteModal.classList.contains("open")) setNoteModalOpen(false);
+        if (removeModal.classList.contains("open")) setRemoveModalOpen(false);
       });
       filterEl.addEventListener("input", renderFromCache);
       if (resetSortBtn) resetSortBtn.addEventListener("click", () => setSort(null));
@@ -1354,6 +1519,7 @@ UI_HTML = """<!doctype html>
         const label = labelEnc ? decodeURIComponent(labelEnc) : "";
         if (!label) return;
         if (action === "note") openNote(label);
+        else if (action === "remove") openRemove(label);
         else updateNow(label);
       });
 
@@ -1473,6 +1639,18 @@ class AppendNotePayload(BaseModel):
     append: str
     separator: str | None = None
     replace: bool = False
+
+
+class SetNotePayload(BaseModel):
+    account_label: str
+    note: str | None = None
+
+
+class RemoveAccountsPayload(BaseModel):
+    account_label: str | None = None
+    labels: list[str] = Field(default_factory=list)
+    delete_local_data: bool = False
+    purge_history: bool = False
 
 
 @app.get("/healthz")
@@ -1642,6 +1820,88 @@ def notes_append(payload: AppendNotePayload):
         raise HTTPException(status_code=502, detail=str(e)) from e
 
 
+@app.post("/notes/set")
+def notes_set(payload: SetNotePayload):
+    if not REFRESHER_BASE_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    label = (payload.account_label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="account_label is required")
+
+    url = f"{REFRESHER_BASE_URL}/config/note_set"
+    data = json.dumps({"label": label, "note": payload.note}, ensure_ascii=False).encode("utf-8")
+    try:
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {"ok": True}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except Exception:
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) else body
+        raise HTTPException(status_code=e.code, detail=detail)
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.post("/accounts/remove")
+def accounts_remove(payload: RemoveAccountsPayload):
+    if not REFRESHER_BASE_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    labels: list[str] = []
+    if payload.account_label:
+        labels.append(payload.account_label)
+    labels.extend(payload.labels or [])
+    labels = [str(l).strip() for l in labels if isinstance(l, (str, int, float)) and str(l).strip()]
+    if not labels:
+        raise HTTPException(status_code=400, detail="labels must be non-empty")
+
+    url = f"{REFRESHER_BASE_URL}/config/remove_accounts"
+    data = json.dumps(
+        {"labels": labels, "delete_local_data": bool(payload.delete_local_data)},
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            body = resp.read().decode("utf-8")
+            result = json.loads(body) if body else {"ok": True}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except Exception:
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) else body
+        raise HTTPException(status_code=e.code, detail=detail)
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    if payload.purge_history and isinstance(result, dict):
+        removed = result.get("removed")
+        if isinstance(removed, list) and removed:
+            removed_labels = [str(l).strip() for l in removed if isinstance(l, str) and l.strip()]
+            if removed_labels:
+                with _db_lock:
+                    with sqlite3.connect(DB_PATH) as con:
+                        for label in removed_labels:
+                            con.execute("DELETE FROM status_events WHERE account_label = ?", (label,))
+                            con.execute("DELETE FROM accounts_registry WHERE account_label = ?", (label,))
+                        con.commit()
+
+    return result
+
+
 @app.post("/registry/sync")
 def registry_sync():
     if not REFRESHER_BASE_URL:
@@ -1754,7 +2014,13 @@ def registry_list():
 @app.post("/registry")
 def registry_upsert(payload: RegistryPayload, replace: bool = False):
     if not payload.accounts:
-        raise HTTPException(status_code=400, detail="accounts must be non-empty")
+        if not replace:
+            raise HTTPException(status_code=400, detail="accounts must be non-empty (or set replace=true)")
+        with _db_lock:
+            with sqlite3.connect(DB_PATH) as con:
+                con.execute("DELETE FROM accounts_registry")
+                con.commit()
+        return {"ok": True, "count": 0}
 
     with _db_lock:
         labels = []
@@ -1764,12 +2030,15 @@ def registry_upsert(payload: RegistryPayload, replace: bool = False):
 
         if replace:
             uniq = sorted({l for l in labels if l})
-            placeholders = ",".join(["?"] * len(uniq))
             with sqlite3.connect(DB_PATH) as con:
-                con.execute(
-                    f"DELETE FROM accounts_registry WHERE account_label NOT IN ({placeholders})",
-                    tuple(uniq),
-                )
+                if uniq:
+                    placeholders = ",".join(["?"] * len(uniq))
+                    con.execute(
+                        f"DELETE FROM accounts_registry WHERE account_label NOT IN ({placeholders})",
+                        tuple(uniq),
+                    )
+                else:
+                    con.execute("DELETE FROM accounts_registry")
                 con.commit()
 
     return {"ok": True, "count": len(payload.accounts)}
