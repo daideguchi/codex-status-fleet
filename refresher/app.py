@@ -58,6 +58,15 @@ _fireworks_balance_cache: dict[str, dict[str, Any]] = {}
 REFRESH_JOIN_TIMEOUT_SEC = float(os.getenv("REFRESH_JOIN_TIMEOUT_SEC", "300"))
 
 
+def _fail_if_refresh_running() -> None:
+    with _refresh_cond:
+        if _refresh_running:
+            raise HTTPException(
+                status_code=409,
+                detail="refresh in progress; please wait for it to finish and try again",
+            )
+
+
 def _collector_base_url() -> str:
     url = COLLECTOR_URL.rstrip("/")
     if url.endswith("/ingest"):
@@ -773,6 +782,15 @@ class SetNotePayload(BaseModel):
     note: str | None = None
 
 
+class PatchAccountPayload(BaseModel):
+    label: str
+    expected_email: str | None = None
+    expected_planType: str | None = None
+    enabled: bool | None = None
+    provider: str | None = None
+    note: str | None = None
+
+
 class RemoveAccountsPayload(BaseModel):
     labels: list[str] = Field(default_factory=list)
     label: str | None = None
@@ -805,13 +823,7 @@ def config_add_accounts(payload: AddAccountsPayload):
 
     # Avoid races with refresh and keep config writes serialized.
     with _config_lock:
-        with _refresh_cond:
-            if _refresh_running:
-                ok = _refresh_cond.wait_for(
-                    lambda: not _refresh_running, timeout=REFRESH_JOIN_TIMEOUT_SEC
-                )
-                if not ok:
-                    raise HTTPException(status_code=409, detail="refresh already running")
+        _fail_if_refresh_running()
 
         cfg = _read_json(config_path)
         accounts = cfg.get("accounts")
@@ -902,11 +914,7 @@ def config_note_append(payload: AppendNotePayload):
         sep = " · "
 
     with _config_lock:
-        with _refresh_cond:
-            if _refresh_running:
-                ok = _refresh_cond.wait_for(lambda: not _refresh_running, timeout=REFRESH_JOIN_TIMEOUT_SEC)
-                if not ok:
-                    raise HTTPException(status_code=409, detail="refresh already running")
+        _fail_if_refresh_running()
 
         cfg = _read_json(config_path)
         accounts = cfg.get("accounts")
@@ -954,13 +962,7 @@ def config_note_set(payload: SetNotePayload):
     note = (payload.note or "").strip()
 
     with _config_lock:
-        with _refresh_cond:
-            if _refresh_running:
-                ok = _refresh_cond.wait_for(
-                    lambda: not _refresh_running, timeout=REFRESH_JOIN_TIMEOUT_SEC
-                )
-                if not ok:
-                    raise HTTPException(status_code=409, detail="refresh already running")
+        _fail_if_refresh_running()
 
         cfg = _read_json(config_path)
         accounts = cfg.get("accounts")
@@ -991,6 +993,106 @@ def config_note_set(payload: SetNotePayload):
             raise HTTPException(status_code=502, detail=f"failed to push registry: {e}") from e
 
     return {"ok": True, "label": label, "note": note}
+
+
+@app.post("/config/account_patch")
+def config_account_patch(payload: PatchAccountPayload):
+    config_path = Path(CONFIG_PATH)
+    if not config_path.exists() or not config_path.is_file():
+        raise HTTPException(status_code=500, detail=f"config not found: {CONFIG_PATH}")
+
+    label = (payload.label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label is required")
+
+    exp_email: str | None = None
+    if payload.expected_email is not None:
+        raw = str(payload.expected_email).strip()
+        if raw:
+            emails = _extract_emails(raw)
+            if not emails:
+                raise HTTPException(status_code=400, detail="expected_email must be a valid email (or empty to clear)")
+            exp_email = emails[0]
+        else:
+            exp_email = None
+
+    expected_plan = (payload.expected_planType or "").strip() or None if payload.expected_planType is not None else None
+    provider = (payload.provider or "").strip() or None if payload.provider is not None else None
+    note = (payload.note or "").strip() if payload.note is not None else None
+
+    changed: dict[str, Any] = {}
+
+    with _config_lock:
+        _fail_if_refresh_running()
+        cfg = _read_json(config_path)
+        accounts = cfg.get("accounts")
+        if not isinstance(accounts, list):
+            raise HTTPException(status_code=500, detail="config.accounts must be an array")
+
+        target: dict[str, Any] | None = None
+        for a in accounts:
+            if not isinstance(a, dict):
+                continue
+            if (a.get("label") or "").strip() == label:
+                target = a
+                break
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"label not found: {label}")
+
+        if payload.expected_email is not None:
+            if exp_email:
+                if (target.get("expected_email") or "").strip().lower() != exp_email:
+                    target["expected_email"] = exp_email
+                    changed["expected_email"] = exp_email
+            else:
+                if "expected_email" in target:
+                    target.pop("expected_email", None)
+                    changed["expected_email"] = None
+
+        if payload.expected_planType is not None:
+            if expected_plan:
+                if (target.get("expected_planType") or "").strip() != expected_plan:
+                    target["expected_planType"] = expected_plan
+                    changed["expected_planType"] = expected_plan
+            else:
+                if "expected_planType" in target:
+                    target.pop("expected_planType", None)
+                    changed["expected_planType"] = None
+
+        if payload.enabled is not None:
+            enabled = bool(payload.enabled)
+            if bool(target.get("enabled", True)) != enabled:
+                target["enabled"] = enabled
+                changed["enabled"] = enabled
+
+        if payload.provider is not None:
+            if provider:
+                if (target.get("provider") or "").strip() != provider:
+                    target["provider"] = provider
+                    changed["provider"] = provider
+            else:
+                if "provider" in target:
+                    target.pop("provider", None)
+                    changed["provider"] = None
+
+        if payload.note is not None:
+            if note:
+                if (target.get("note") or "").strip() != note:
+                    target["note"] = note
+                    changed["note"] = note
+            else:
+                if "note" in target:
+                    target.pop("note", None)
+                    changed["note"] = None
+
+        _write_json_atomic(config_path, cfg)
+
+    try:
+        _push_registry_from_config()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"failed to push registry: {e}") from e
+
+    return {"ok": True, "label": label, "changed": changed}
 
 
 @app.post("/config/remove_accounts")
@@ -1030,13 +1132,7 @@ def config_remove_accounts(payload: RemoveAccountsPayload):
     local_errors: dict[str, str] = {}
 
     with _config_lock:
-        with _refresh_cond:
-            if _refresh_running:
-                ok = _refresh_cond.wait_for(
-                    lambda: not _refresh_running, timeout=REFRESH_JOIN_TIMEOUT_SEC
-                )
-                if not ok:
-                    raise HTTPException(status_code=409, detail="refresh already running")
+        _fail_if_refresh_running()
 
         cfg = _read_json(config_path)
         accounts = cfg.get("accounts")
@@ -1068,7 +1164,7 @@ def config_remove_accounts(payload: RemoveAccountsPayload):
         _write_json_atomic(config_path, cfg)
 
         if payload.delete_local_data:
-            for label in removed:
+            for label in uniq:
                 try:
                     account_home = Path(ACCOUNTS_DIR) / label
                     if account_home.exists():
@@ -1125,13 +1221,7 @@ def config_add_anthropic_keys(payload: AddAnthropicKeysPayload):
         exp_email = emails[0] if emails else None
 
     with _config_lock:
-        with _refresh_cond:
-            if _refresh_running:
-                ok = _refresh_cond.wait_for(
-                    lambda: not _refresh_running, timeout=REFRESH_JOIN_TIMEOUT_SEC
-                )
-                if not ok:
-                    raise HTTPException(status_code=409, detail="refresh already running")
+        _fail_if_refresh_running()
 
         cfg = _read_json(config_path)
         accounts = cfg.get("accounts")
@@ -1252,13 +1342,7 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
         base_url = base_url.rstrip("/")
 
     with _config_lock:
-        with _refresh_cond:
-            if _refresh_running:
-                ok = _refresh_cond.wait_for(
-                    lambda: not _refresh_running, timeout=REFRESH_JOIN_TIMEOUT_SEC
-                )
-                if not ok:
-                    raise HTTPException(status_code=409, detail="refresh already running")
+        _fail_if_refresh_running()
 
         cfg = _read_json(config_path)
         accounts = cfg.get("accounts")

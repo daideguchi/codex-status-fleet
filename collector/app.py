@@ -40,6 +40,7 @@ UI_HTML = """<!doctype html>
       button.danger:hover { background: rgba(213, 85, 85, 0.18); }
       input, textarea, select { padding: 5px 9px; border-radius: 8px; border: 1px solid #8884; background: #8881; }
       textarea { width: 100%; min-height: 140px; resize: vertical; }
+      #editNote { min-height: 90px; }
       table { width: 100%; border-collapse: collapse; font-size: 11px; line-height: 1.0; }
       th, td { text-align: left; padding: 2px 6px; border-bottom: 1px solid #8883; vertical-align: middle; white-space: nowrap; }
       th { position: sticky; top: 0; background: Canvas; z-index: 1; }
@@ -210,10 +211,10 @@ UI_HTML = """<!doctype html>
 	    <div id="noteModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
 	      <div class="card">
 	        <div class="row" style="justify-content: space-between;">
-	          <h2>Edit note</h2>
+	          <h2>Edit account</h2>
 	          <button id="noteClose">Close</button>
 	        </div>
-	        <div class="small">Append or overwrite note (saved into accounts.json + registry). You can also clear it.</div>
+	        <div class="small">Edit expected email / note / enabled (saved into accounts.json + registry).</div>
 	        <div style="height: 8px"></div>
 	        <div class="row">
 	          <span class="muted">Target</span>
@@ -221,16 +222,21 @@ UI_HTML = """<!doctype html>
 	        </div>
 	        <div style="height: 8px"></div>
 	        <div class="row">
-	          <label class="muted">Append <input id="noteAppend" placeholder="comment" /></label>
-	          <label class="muted">Separator <input id="noteSep" value=" · " /></label>
-	          <label class="muted"><input id="noteReplace" type="checkbox" /> overwrite</label>
+	          <label class="muted">Email (expected) <input id="editEmail" placeholder="user@example.com" /></label>
+	          <label class="muted"><input id="editEnabled" type="checkbox" checked /> enabled</label>
 	        </div>
 	        <div style="height: 8px"></div>
-	        <div class="small muted">Current</div>
-	        <pre id="noteCurrent" class="mono small" style="white-space: pre-wrap; margin: 0;"></pre>
+	        <div class="row">
+	          <label class="muted">Append <input id="noteAppend" placeholder="comment" /></label>
+	          <label class="muted">Separator <input id="noteSep" value=" · " /></label>
+	          <button id="editAppendBtn" class="tablebtn" title="Append to note" aria-label="Append to note">＋</button>
+	        </div>
+	        <div style="height: 8px"></div>
+	        <div class="small muted">Note</div>
+	        <textarea id="editNote" placeholder="用途 / memo"></textarea>
 	        <div style="height: 10px"></div>
 	        <div class="row" style="justify-content: flex-end;">
-	          <button id="noteClear" class="danger">Clear</button>
+	          <button id="noteClear" class="danger">Clear note</button>
 	          <button id="noteCancel">Cancel</button>
 	          <button id="noteSave">Save</button>
 	        </div>
@@ -311,10 +317,12 @@ UI_HTML = """<!doctype html>
 		      const noteCancel = $("noteCancel");
 		      const noteSave = $("noteSave");
 		      const noteTarget = $("noteTarget");
+		      const editEmail = $("editEmail");
+		      const editEnabled = $("editEnabled");
 		      const noteAppend = $("noteAppend");
 		      const noteSep = $("noteSep");
-		      const noteReplace = $("noteReplace");
-		      const noteCurrent = $("noteCurrent");
+		      const editAppendBtn = $("editAppendBtn");
+		      const editNote = $("editNote");
 		      const noteClear = $("noteClear");
 		      const removeModal = $("removeModal");
 		      const removeClose = $("removeClose");
@@ -688,7 +696,7 @@ UI_HTML = """<!doctype html>
         if (open) {
           noteModal.classList.add("open");
           noteModal.setAttribute("aria-hidden", "false");
-          try { noteAppend.focus(); } catch {}
+          try { (editEmail || editNote || noteAppend).focus(); } catch {}
         } else {
           noteModal.classList.remove("open");
           noteModal.setAttribute("aria-hidden", "true");
@@ -719,13 +727,16 @@ UI_HTML = """<!doctype html>
         const parsed = it ? (it.parsed || {}) : {};
         const norm = parsed.normalized || {};
         const reg = it ? (it.registry || {}) : {};
-        const email = String(norm.account_email || norm.expected_email || reg.expected_email || "").trim();
-        const note = String(reg.note || "").trim();
+        const accountEmail = String(norm.account_email || "").trim();
+        const expectedEmail = String(reg.expected_email || norm.expected_email || "").trim();
+        const note = String(reg.note || "");
+        const enabled = reg && reg.enabled === false ? false : true;
 
-        if (noteTarget) noteTarget.textContent = email ? `${noteLabel} (${email})` : noteLabel;
-        if (noteCurrent) noteCurrent.textContent = note || "";
+        if (noteTarget) noteTarget.textContent = accountEmail ? `${noteLabel} (${accountEmail})` : noteLabel;
+        if (editEmail) editEmail.value = expectedEmail || "";
+        if (editEnabled) editEnabled.checked = enabled;
+        if (editNote) editNote.value = note || "";
         if (noteAppend) noteAppend.value = "";
-        if (noteReplace) noteReplace.checked = false;
 
         setModalOpen(false);
         setKeysModalOpen(false);
@@ -753,13 +764,23 @@ UI_HTML = """<!doctype html>
         setRemoveModalOpen(true);
       }
 
+      function appendToEditNote() {
+        const text = (noteAppend && noteAppend.value) ? String(noteAppend.value).trim() : "";
+        if (!text) return;
+        const sepRaw = (noteSep && noteSep.value !== undefined) ? String(noteSep.value) : "";
+        const sep = sepRaw !== "" ? sepRaw : " · ";
+        const cur = (editNote && editNote.value !== undefined) ? String(editNote.value) : "";
+        const curTrim = cur.trim();
+        const next = curTrim ? (curTrim + sep + text) : text;
+        if (editNote) editNote.value = next;
+        if (noteAppend) noteAppend.value = "";
+      }
+
       async function saveNote() {
         if (!noteLabel) return;
-        const text = (noteAppend.value || "").trim();
-        if (!text) {
-          statusEl.textContent = "Note: enter text to append";
-          return;
-        }
+        const emailText = (editEmail && editEmail.value) ? String(editEmail.value).trim() : "";
+        const noteText = (editNote && editNote.value !== undefined) ? String(editNote.value) : "";
+        const enabled = !!(editEnabled && editEnabled.checked);
 
         noteSave.disabled = true;
         noteCancel.disabled = true;
@@ -769,11 +790,11 @@ UI_HTML = """<!doctype html>
         try {
           const payload = {
             account_label: noteLabel,
-            append: text,
-            separator: (noteSep.value || "").toString(),
-            replace: !!(noteReplace && noteReplace.checked),
+            expected_email: emailText,
+            enabled,
+            note: noteText,
           };
-          const res = await fetch("/notes/append", {
+          const res = await fetch("/accounts/patch", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -786,7 +807,18 @@ UI_HTML = """<!doctype html>
           }
 
           setNoteModalOpen(false);
+          // Optimistic cache update for snappy UX.
+          try {
+            const it = _findByLabel(noteLabel);
+            if (it) {
+              if (!it.registry) it.registry = {};
+              it.registry.expected_email = emailText || null;
+              it.registry.enabled = enabled;
+              it.registry.note = noteText.trim() ? noteText.trim() : null;
+            }
+          } catch {}
           noteLabel = "";
+          renderFromCache();
           await loadLatest();
           lastUpdateText = `Note updated — ${new Date().toLocaleTimeString()}`;
           renderFromCache();
@@ -805,14 +837,17 @@ UI_HTML = """<!doctype html>
         const ok = confirm("Clear note for this account?");
         if (!ok) return;
 
+        const emailText = (editEmail && editEmail.value) ? String(editEmail.value).trim() : "";
+        const enabled = !!(editEnabled && editEnabled.checked);
+
         noteSave.disabled = true;
         noteCancel.disabled = true;
         noteClose.disabled = true;
         if (noteClear) noteClear.disabled = true;
         statusEl.textContent = "Clearing note...";
         try {
-          const payload = { account_label: noteLabel, note: "" };
-          const res = await fetch("/notes/set", {
+          const payload = { account_label: noteLabel, expected_email: emailText, enabled, note: "" };
+          const res = await fetch("/accounts/patch", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -825,7 +860,17 @@ UI_HTML = """<!doctype html>
           }
 
           setNoteModalOpen(false);
+          try {
+            const it = _findByLabel(noteLabel);
+            if (it) {
+              if (!it.registry) it.registry = {};
+              it.registry.note = null;
+              it.registry.expected_email = emailText || null;
+              it.registry.enabled = enabled;
+            }
+          } catch {}
           noteLabel = "";
+          renderFromCache();
           await loadLatest();
           lastUpdateText = `Note cleared — ${new Date().toLocaleTimeString()}`;
           renderFromCache();
@@ -854,8 +899,9 @@ UI_HTML = """<!doctype html>
         removeClose.disabled = true;
         statusEl.textContent = "Removing account...";
         try {
+          const target = removeLabel;
           const payload = {
-            account_label: removeLabel,
+            account_label: target,
             delete_local_data: delLocal,
             purge_history: purge,
           };
@@ -873,8 +919,20 @@ UI_HTML = """<!doctype html>
 
           setRemoveModalOpen(false);
           removeLabel = "";
+          try {
+            cachedItems = (Array.isArray(cachedItems) ? cachedItems : []).filter((it) => {
+              return String(it && it.account_label ? it.account_label : "") !== String(target);
+            });
+          } catch {}
+          renderFromCache();
           await loadLatest();
-          lastUpdateText = `Removed — ${new Date().toLocaleTimeString()}`;
+
+          const removed = body && Array.isArray(body.removed) ? body.removed : [];
+          const missing = body && Array.isArray(body.missing) ? body.missing : [];
+          const removedMsg = removed.length ? `removed:${removed.length}` : "";
+          const missingMsg = missing.length ? `missing:${missing.length}` : "";
+          const extra = (removedMsg || missingMsg) ? ` (${[removedMsg, missingMsg].filter(Boolean).join(" ")})` : "";
+          lastUpdateText = `Removed — ${new Date().toLocaleTimeString()}${extra}`;
           renderFromCache();
         } catch (e) {
           statusEl.textContent = `Remove error: ${e}`;
@@ -1156,7 +1214,7 @@ UI_HTML = """<!doctype html>
             <td>${state}</td>
             <td>
               <button class="tablebtn" title="Update" aria-label="Update" data-action="update" data-label="${encodeURIComponent(safe(item.account_label))}">↻</button>
-              <button class="tablebtn" title="Note" aria-label="Note" data-action="note" data-label="${encodeURIComponent(safe(item.account_label))}">✎</button>
+              <button class="tablebtn" title="Edit" aria-label="Edit" data-action="note" data-label="${encodeURIComponent(safe(item.account_label))}">✎</button>
               <button class="tablebtn danger" title="Remove" aria-label="Remove" data-action="remove" data-label="${encodeURIComponent(safe(item.account_label))}">✕</button>
             </td>
           </tr>
@@ -1482,6 +1540,15 @@ UI_HTML = """<!doctype html>
       noteCancel.addEventListener("click", () => setNoteModalOpen(false));
       noteSave.addEventListener("click", saveNote);
       if (noteClear) noteClear.addEventListener("click", clearNote);
+      if (editAppendBtn) editAppendBtn.addEventListener("click", appendToEditNote);
+      if (noteAppend) {
+        noteAppend.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            appendToEditNote();
+          }
+        });
+      }
       noteModal.addEventListener("click", (ev) => {
         if (ev.target === noteModal) setNoteModalOpen(false);
       });
@@ -1514,6 +1581,10 @@ UI_HTML = """<!doctype html>
         const t = ev.target;
         const btn = t && t.closest ? t.closest("button[data-action][data-label]") : null;
         if (!btn) return;
+        if (refreshing) {
+          statusEl.textContent = "Refreshing… please wait";
+          return;
+        }
         const action = btn.getAttribute("data-action") || "update";
         const labelEnc = btn.getAttribute("data-label");
         const label = labelEnc ? decodeURIComponent(labelEnc) : "";
@@ -1651,6 +1722,15 @@ class RemoveAccountsPayload(BaseModel):
     labels: list[str] = Field(default_factory=list)
     delete_local_data: bool = False
     purge_history: bool = False
+
+
+class PatchAccountPayload(BaseModel):
+    account_label: str
+    expected_email: str | None = None
+    expected_planType: str | None = None
+    enabled: bool | None = None
+    provider: str | None = None
+    note: str | None = None
 
 
 @app.get("/healthz")
@@ -1900,6 +1980,47 @@ def accounts_remove(payload: RemoveAccountsPayload):
                         con.commit()
 
     return result
+
+
+@app.post("/accounts/patch")
+def accounts_patch(payload: PatchAccountPayload):
+    if not REFRESHER_BASE_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    label = (payload.account_label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="account_label is required")
+
+    url = f"{REFRESHER_BASE_URL}/config/account_patch"
+    data = json.dumps(
+        {
+            "label": label,
+            "expected_email": payload.expected_email,
+            "expected_planType": payload.expected_planType,
+            "enabled": payload.enabled,
+            "provider": payload.provider,
+            "note": payload.note,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {"ok": True}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except Exception:
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) else body
+        raise HTTPException(status_code=e.code, detail=detail)
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @app.post("/registry/sync")
