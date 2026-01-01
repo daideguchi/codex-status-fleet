@@ -160,13 +160,14 @@ UI_HTML = """<!doctype html>
         <div style="height: 8px"></div>
         <textarea id="keysText" placeholder="sk-ant-..."></textarea>
         <div style="height: 8px"></div>
-        <div class="row">
-          <label class="muted">Label prefix <input id="keysPrefix" value="claude" /></label>
-          <label class="muted">Model <input id="keysModel" placeholder="claude-3-5-haiku-latest" /></label>
-          <label class="muted">Note <input id="keysNote" placeholder="team /用途" /></label>
-          <label class="muted"><input id="keysEnabled" type="checkbox" checked /> enabled</label>
-          <span id="keysFound" class="small"></span>
-        </div>
+	        <div class="row">
+	          <label class="muted">Label prefix <input id="keysPrefix" value="claude" /></label>
+	          <label class="muted">Email <input id="keysEmail" placeholder="user@example.com" /></label>
+	          <label class="muted">Model <input id="keysModel" placeholder="claude-3-5-haiku-latest" /></label>
+	          <label class="muted">Note <input id="keysNote" placeholder="team /用途" /></label>
+	          <label class="muted"><input id="keysEnabled" type="checkbox" checked /> enabled</label>
+	          <span id="keysFound" class="small"></span>
+	        </div>
         <div style="height: 8px"></div>
         <pre id="keysPreview" class="mono small" style="white-space: pre-wrap; margin: 0;"></pre>
         <div style="height: 10px"></div>
@@ -188,6 +189,7 @@ UI_HTML = """<!doctype html>
 	        <div style="height: 8px"></div>
 	        <div class="row">
 	          <label class="muted">Label prefix <input id="fwPrefix" value="fireworks" /></label>
+	          <label class="muted">Email <input id="fwEmail" placeholder="user@example.com" /></label>
 	          <label class="muted">Model <input id="fwModel" placeholder="accounts/fireworks/models/llama-v3p1-8b-instruct" /></label>
 	          <label class="muted">Base URL <input id="fwBaseUrl" placeholder="https://api.fireworks.ai/inference/v1" /></label>
 	          <label class="muted">Note <input id="fwNote" placeholder="team /用途" /></label>
@@ -255,11 +257,12 @@ UI_HTML = """<!doctype html>
       const keysClose = $("keysClose");
       const keysCancel = $("keysCancel");
       const keysSubmit = $("keysSubmit");
-      const keysText = $("keysText");
-      const keysPrefix = $("keysPrefix");
-      const keysModel = $("keysModel");
-      const keysNote = $("keysNote");
-	      const keysEnabled = $("keysEnabled");
+		      const keysText = $("keysText");
+		      const keysPrefix = $("keysPrefix");
+		      const keysEmail = $("keysEmail");
+		      const keysModel = $("keysModel");
+		      const keysNote = $("keysNote");
+		      const keysEnabled = $("keysEnabled");
 		      const keysFound = $("keysFound");
 		      const keysPreview = $("keysPreview");
 		      const fwModal = $("fwModal");
@@ -268,6 +271,7 @@ UI_HTML = """<!doctype html>
 		      const fwSubmit = $("fwSubmit");
 		      const fwText = $("fwText");
 		      const fwPrefix = $("fwPrefix");
+		      const fwEmail = $("fwEmail");
 		      const fwModel = $("fwModel");
 		      const fwBaseUrl = $("fwBaseUrl");
 		      const fwNote = $("fwNote");
@@ -1141,6 +1145,7 @@ UI_HTML = """<!doctype html>
             text: keysText.value,
             enabled: !!keysEnabled.checked,
             label_prefix: (keysPrefix.value || "").trim() || null,
+            expected_email: (keysEmail.value || "").trim() || null,
             note: (keysNote.value || "").trim() || null,
             anthropic_model: (keysModel.value || "").trim() || null,
           };
@@ -1158,6 +1163,7 @@ UI_HTML = """<!doctype html>
 
           setKeysModalOpen(false);
           keysText.value = "";
+          keysEmail.value = "";
           keysNote.value = "";
           renderKeysPreview();
 
@@ -1191,6 +1197,7 @@ UI_HTML = """<!doctype html>
             text: fwText.value,
             enabled: !!fwEnabled.checked,
             label_prefix: (fwPrefix.value || "").trim() || null,
+            expected_email: (fwEmail.value || "").trim() || null,
             note: (fwNote.value || "").trim() || null,
             fireworks_model: (fwModel.value || "").trim() || null,
             fireworks_base_url: (fwBaseUrl.value || "").trim() || null,
@@ -1209,6 +1216,7 @@ UI_HTML = """<!doctype html>
 
           setFwModalOpen(false);
           fwText.value = "";
+          fwEmail.value = "";
           fwNote.value = "";
           renderFwPreview();
 
@@ -1445,6 +1453,7 @@ class AddAnthropicKeysPayload(BaseModel):
     enabled: bool = True
     note: str | None = None
     label_prefix: str | None = None
+    expected_email: str | None = None
     anthropic_model: str | None = None
 
 
@@ -1454,6 +1463,7 @@ class AddFireworksKeysPayload(BaseModel):
     enabled: bool = True
     note: str | None = None
     label_prefix: str | None = None
+    expected_email: str | None = None
     fireworks_model: str | None = None
     fireworks_base_url: str | None = None
 

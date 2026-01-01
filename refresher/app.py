@@ -743,6 +743,7 @@ class AddAnthropicKeysPayload(BaseModel):
     enabled: bool = True
     note: str | None = None
     label_prefix: str | None = None
+    expected_email: str | None = None
     anthropic_model: str | None = None
 
 
@@ -752,6 +753,7 @@ class AddFireworksKeysPayload(BaseModel):
     enabled: bool = True
     note: str | None = None
     label_prefix: str | None = None
+    expected_email: str | None = None
     fireworks_model: str | None = None
     fireworks_base_url: str | None = None
 
@@ -952,6 +954,10 @@ def config_add_anthropic_keys(payload: AddAnthropicKeysPayload):
     model = (payload.anthropic_model or "").strip() or None
     label_prefix = (payload.label_prefix or "").strip() or None
     note = (payload.note or "").strip() or None
+    exp_email: str | None = None
+    if payload.expected_email:
+        emails = _extract_emails(payload.expected_email)
+        exp_email = emails[0] if emails else None
 
     with _config_lock:
         with _refresh_cond:
@@ -998,6 +1004,8 @@ def config_add_anthropic_keys(payload: AddAnthropicKeysPayload):
                     "provider": "anthropic",
                     "enabled": bool(payload.enabled),
                 }
+                if exp_email:
+                    entry["expected_email"] = exp_email
                 if note:
                     entry["note"] = note
                 if model:
@@ -1012,6 +1020,9 @@ def config_add_anthropic_keys(payload: AddAnthropicKeysPayload):
                     changed = True
                 if bool(entry.get("enabled", True)) != bool(payload.enabled):
                     entry["enabled"] = bool(payload.enabled)
+                    changed = True
+                if exp_email and (entry.get("expected_email") or "").strip().lower() != exp_email:
+                    entry["expected_email"] = exp_email
                     changed = True
                 if note and (entry.get("note") or "").strip() != note:
                     entry["note"] = note
@@ -1068,6 +1079,10 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
     note = (payload.note or "").strip() or None
     model = (payload.fireworks_model or "").strip() or None
     base_url = (payload.fireworks_base_url or "").strip() or None
+    default_email: str | None = None
+    if payload.expected_email:
+        emails = _extract_emails(payload.expected_email)
+        default_email = emails[0] if emails else None
     if base_url:
         base_url = base_url.rstrip("/")
 
@@ -1108,6 +1123,8 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
         for e in uniq:
             key = (e.get("key") or "").strip()
             email = (e.get("email") or "").strip().lower() or None
+            if not email and default_email:
+                email = default_email
             note_from_text = (e.get("note") or "").strip() or None
 
             base = (
