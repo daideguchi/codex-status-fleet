@@ -834,16 +834,17 @@ def config_add_accounts(payload: AddAccountsPayload):
         expected_plan = (payload.expected_planType or "").strip() or None
 
         existing_by_label: dict[str, dict[str, Any]] = {}
-        existing_by_email: dict[str, dict[str, Any]] = {}
+        existing_by_email_codex: dict[str, dict[str, Any]] = {}
         for a in accounts:
             if not isinstance(a, dict):
                 continue
             label = (a.get("label") or "").strip()
             if label:
                 existing_by_label[label] = a
+            provider = (a.get("provider") or "codex").strip().lower()
             exp = (a.get("expected_email") or "").strip().lower()
-            if exp:
-                existing_by_email[exp] = a
+            if exp and provider in ("codex", "openai_codex", "openai"):
+                existing_by_email_codex[exp] = a
 
         added = 0
         updated = 0
@@ -852,7 +853,9 @@ def config_add_accounts(payload: AddAccountsPayload):
             label = _make_label_from_email(email)
             labels.append(label)
 
-            entry = existing_by_email.get(email) or existing_by_label.get(label)
+            # Only merge-by-email within Codex accounts. The same email may legitimately exist
+            # for other providers (e.g., Fireworks API key) and should not block adding Codex.
+            entry = existing_by_label.get(label) or existing_by_email_codex.get(email)
             if entry is None:
                 entry = {
                     "label": label,
@@ -864,7 +867,7 @@ def config_add_accounts(payload: AddAccountsPayload):
                     entry["expected_planType"] = expected_plan
                 accounts.append(entry)
                 existing_by_label[label] = entry
-                existing_by_email[email] = entry
+                existing_by_email_codex[email] = entry
                 added += 1
             else:
                 changed = False
