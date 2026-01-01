@@ -156,7 +156,7 @@ UI_HTML = """<!doctype html>
           <h2>Add Claude (Anthropic) keys</h2>
           <button id="keysClose">Close</button>
         </div>
-        <div class="small">Paste Anthropic API keys (sk-ant-...). Keys are stored under accounts/&lt;label&gt;/.secrets/anthropic_api_key.txt.</div>
+        <div class="small">Paste Anthropic API keys (sk-ant-...). Optional: set Email for display. Keys are stored under accounts/&lt;label&gt;/.secrets/anthropic_api_key.txt.</div>
         <div style="height: 8px"></div>
         <textarea id="keysText" placeholder="sk-ant-..."></textarea>
         <div style="height: 8px"></div>
@@ -183,7 +183,7 @@ UI_HTML = """<!doctype html>
 	          <h2>Add Fireworks keys</h2>
 	          <button id="fwClose">Close</button>
 	        </div>
-	        <div class="small">Paste Fireworks API keys (one per line). Keys are stored under accounts/&lt;label&gt;/.secrets/fireworks_api_key.txt.</div>
+	        <div class="small">Paste Fireworks API keys (one per line). Optional: set Email for display. Keys are stored under accounts/&lt;label&gt;/.secrets/fireworks_api_key.txt.</div>
 	        <div style="height: 8px"></div>
 	        <textarea id="fwText" placeholder="YOUR_FIREWORKS_API_KEY"></textarea>
 	        <div style="height: 8px"></div>
