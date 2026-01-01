@@ -1104,6 +1104,7 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
         existing_labels: set[str] = set()
         existing_by_label: dict[str, dict[str, Any]] = {}
         existing_by_email: dict[str, dict[str, Any]] = {}
+        existing_by_key: dict[str, str] = {}
         for a in accounts:
             if not isinstance(a, dict):
                 continue
@@ -1116,6 +1117,19 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
             exp = (a.get("expected_email") or "").strip().lower()
             if provider == "fireworks" and exp:
                 existing_by_email[exp] = a
+            if provider == "fireworks":
+                key_path = Path(ACCOUNTS_DIR) / label / ".secrets" / "fireworks_api_key.txt"
+                if key_path.is_file():
+                    key_text = _read_text_file(key_path)
+                    if key_text:
+                        candidate: str | None = None
+                        for line in key_text.splitlines():
+                            s = line.strip()
+                            if s:
+                                candidate = s
+                                break
+                        if candidate and _FIREWORKS_KEY_LINE_RE.match(candidate):
+                            existing_by_key[candidate] = label
 
         added = 0
         updated = 0
@@ -1127,18 +1141,22 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
                 email = default_email
             note_from_text = (e.get("note") or "").strip() or None
 
-            base = (
-                _make_label_from_fireworks_email(email, prefix=label_prefix)
-                if email
-                else _make_label_from_fireworks_key(key, prefix=label_prefix)
-            )
-
-            existing = existing_by_email.get(email) if email else None
-            if existing is not None:
-                label = (existing.get("label") or "").strip() or base
+            existing_label_by_key = existing_by_key.get(key)
+            if existing_label_by_key:
+                label = existing_label_by_key
             else:
-                label = base if base in existing_by_label else _make_unique_label(base, existing_labels)
-                existing_labels.add(label)
+                base = (
+                    _make_label_from_fireworks_email(email, prefix=label_prefix)
+                    if email
+                    else _make_label_from_fireworks_key(key, prefix=label_prefix)
+                )
+
+                existing = existing_by_email.get(email) if email else None
+                if existing is not None:
+                    label = (existing.get("label") or "").strip() or base
+                else:
+                    label = base if base in existing_by_label else _make_unique_label(base, existing_labels)
+                    existing_labels.add(label)
             labels.append(label)
 
             entry = existing_by_label.get(label)
