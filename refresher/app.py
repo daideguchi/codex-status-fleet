@@ -274,6 +274,25 @@ def _headers_to_dict(headers: Any) -> dict[str, str]:
     return out
 
 
+def _extract_error_message(body_text: str) -> str | None:
+    s = (body_text or "").strip()
+    if not s:
+        return None
+    if len(s) > 4000:
+        s = s[:4000]
+    try:
+        obj = json.loads(s)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    err = obj.get("error")
+    if not isinstance(err, dict):
+        return None
+    msg = err.get("message")
+    return msg.strip() if isinstance(msg, str) and msg.strip() else None
+
+
 def _anthropic_request_rate_limits(api_key: str, model: str) -> tuple[int, dict[str, str]]:
     payload = {
         "model": model,
@@ -391,7 +410,9 @@ def _fireworks_models_url(base_url: str | None) -> str:
     return f"{base}/models"
 
 
-def _fireworks_request_rate_limits(api_key: str, base_url: str | None) -> tuple[int, dict[str, str]]:
+def _fireworks_request_rate_limits(
+    api_key: str, base_url: str | None
+) -> tuple[int, dict[str, str], str | None]:
     url = _fireworks_models_url(base_url)
     req = urllib.request.Request(
         url,
@@ -406,10 +427,10 @@ def _fireworks_request_rate_limits(api_key: str, base_url: str | None) -> tuple[
     try:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
             _ = resp.read()
-            return int(getattr(resp, "status", 200)), _headers_to_dict(resp.headers)
+            return int(getattr(resp, "status", 200)), _headers_to_dict(resp.headers), None
     except urllib.error.HTTPError as e:
-        _ = e.read()
-        return int(getattr(e, "code", 0) or 0), _headers_to_dict(e.headers)
+        body = e.read(4096).decode("utf-8", errors="replace")
+        return int(getattr(e, "code", 0) or 0), _headers_to_dict(e.headers), body
 
 
 def _fireworks_get_balance(api_key: str) -> dict[str, Any] | None:
@@ -1864,7 +1885,10 @@ def _refresh_one_fireworks(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
         return "auth required", payload
 
     try:
-        http_status, headers = _fireworks_request_rate_limits(api_key, base_url=base_url)
+        http_status, headers, err_body = _fireworks_request_rate_limits(api_key, base_url=base_url)
+        err_msg = _extract_error_message(err_body or "") or ((err_body or "").strip() or None)
+        if err_msg and len(err_msg) > 600:
+            err_msg = err_msg[:600] + "…"
         headers_filtered = {
             k: v
             for (k, v) in headers.items()
@@ -1890,11 +1914,12 @@ def _refresh_one_fireworks(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
                 "base_url": base_url,
                 "headers": headers_filtered,
                 "credits": normalized.get("credits"),
+                "error": err_msg,
             },
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        parsed = {
+        parsed: dict[str, Any] = {
             "http_status": http_status,
             "model": model,
             "base_url": base_url,
@@ -1904,6 +1929,11 @@ def _refresh_one_fireworks(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
 
         if normalized.get("requiresAuth"):
             state = "auth required"
+        elif http_status >= 400:
+            parsed["probe_error"] = True
+            parsed["error_type"] = "HTTPStatus"
+            parsed["error"] = err_msg or f"HTTP {http_status}"
+            state = "error"
         elif normalized.get("windows") or normalized.get("credits") or (200 <= http_status < 400):
             state = "ok"
         else:

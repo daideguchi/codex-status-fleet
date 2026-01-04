@@ -673,9 +673,18 @@ UI_HTML = """<!doctype html>
           return c;
         });
       }
-      function pill(text, ok) {
+      function _titleText(v, maxLen) {
+        const n = (typeof maxLen === "number" && Number.isFinite(maxLen)) ? maxLen : 260;
+        const s = String(v || "").replace(/\\s+/g, " ").trim();
+        if (!s) return "";
+        if (s.length > n) return s.slice(0, Math.max(0, n - 1)) + "…";
+        return s;
+      }
+      function pill(text, ok, title) {
         const cls = ok ? "pill ok" : "pill bad";
-        return `<span class="${cls}">${esc(text)}</span>`;
+        const t = _titleText(title);
+        const tAttr = t ? ` title="${esc(t)}"` : "";
+        return `<span class="${cls}"${tAttr}>${esc(text)}</span>`;
       }
 
       function setModalOpen(open) {
@@ -1095,8 +1104,17 @@ UI_HTML = """<!doctype html>
         if (cls === "disabled") state = pill("disabled", false);
         else if (cls === "pending") state = pill("pending", false);
         else if (cls === "no_parsed") state = pill("no parsed", false);
-        else if (cls === "auth_required") state = pill("auth required", false);
-        else if (cls === "probe_error") state = pill("probe_error", false);
+        else if (cls === "auth_required") state = pill("auth required", false, parsed ? parsed.error : "");
+        else if (cls === "probe_error") {
+          const statusCode = parsed && parsed.http_status !== undefined ? Number(parsed.http_status) : null;
+          const status = Number.isFinite(statusCode) ? statusCode : null;
+          const errText = parsed ? String(parsed.error || "").trim() : "";
+          if (providerLc.startsWith("fireworks") && status === 412 && /suspended/i.test(errText)) {
+            state = pill("suspended", false, errText);
+          } else {
+            state = pill("error", false, errText);
+          }
+        }
         else state = pill("ok", true);
 
         const expectedMatch = norm.expected_email_match;
