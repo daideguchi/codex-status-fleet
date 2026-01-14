@@ -101,34 +101,35 @@ UI_HTML = """<!doctype html>
       JSON: <a href="/latest">/latest</a> / <a href="/registry">/registry</a> / <a href="/healthz">/healthz</a>
     </div>
 	    <div class="toolbar">
-	      <button id="refresh">Update now</button>
-	      <button id="stopApp" class="danger" title="Stop all Fleet containers (Docker)">Stop</button>
-	      <button id="add">Add accounts</button>
-	      <button id="addKeys">Add Claude keys</button>
-	      <button id="addFw">Add Fireworks keys</button>
-	      <label class="muted">View
+	      <button id="refresh">今すぐ更新</button>
+	      <button id="stopApp" class="danger" title="Fleet の全コンテナを停止（Docker）">停止</button>
+	      <button id="add">アカウント追加</button>
+	      <button id="addKeys">Claude キー追加</button>
+	      <button id="addFw">Fireworks キー追加</button>
+	      <button id="openLogin" title="Codex をデバイス認証でログイン">Codex ログイン</button>
+	      <label class="muted">表示
 	        <select id="viewMode">
-	          <option value="all" selected>All</option>
-	          <option value="subscription">Subscription</option>
-	          <option value="credits">Credits</option>
+	          <option value="all" selected>すべて</option>
+	          <option value="subscription">サブスク（Codex）</option>
+	          <option value="credits">API（Claude/Fireworks）</option>
 	        </select>
 	      </label>
-	      <button id="resetSort" title="Reset sorting to default order">Default order</button>
-		      <label class="muted">Filter <input id="filter" placeholder="label / email / provider / note / key" /></label>
+	      <button id="resetSort" title="並び順を標準に戻す">標準順</button>
+		      <label class="muted">絞り込み <input id="filter" placeholder="ラベル / メール / プロバイダ / メモ / キー" /></label>
 	      <span id="summary" class="muted"></span>
 	      <span id="status" class="muted"></span>
 	    </div>
 	    <table>
 	      <thead>
 	        <tr>
-	          <th class="sortable" data-sort="provider">Provider</th>
-	          <th class="sortable" data-sort="account">Account / Note</th>
-	          <th class="sortable" data-sort="plan">Plan / Model</th>
-	          <th class="sortable" data-sort="limits">Limits</th>
-	          <th class="sortable col-resets" data-sort="resets">Resets</th>
-	          <th class="sortable col-credits" data-sort="credits">Credits</th>
-	          <th class="sortable" data-sort="state">State</th>
-	          <th>Action</th>
+	          <th class="sortable" data-sort="provider">プロバイダ</th>
+	          <th class="sortable" data-sort="account">アカウント / メモ</th>
+	          <th class="sortable" data-sort="plan">プラン / モデル</th>
+	          <th class="sortable" data-sort="limits">リミット</th>
+	          <th class="sortable col-resets" data-sort="resets">リセット</th>
+	          <th class="sortable col-credits" data-sort="credits">クレジット</th>
+	          <th class="sortable" data-sort="state">状態</th>
+	          <th>操作</th>
 	        </tr>
 	      </thead>
 	      <tbody id="rows"></tbody>
@@ -136,15 +137,15 @@ UI_HTML = """<!doctype html>
     <div id="addModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
       <div class="card">
         <div class="row" style="justify-content: space-between;">
-          <h2>Add accounts</h2>
-          <button id="addClose">Close</button>
+          <h2>アカウント追加</h2>
+          <button id="addClose">閉じる</button>
         </div>
-        <div class="small">Paste emails (one per line) or paste /status output. Emails are extracted automatically.</div>
+        <div class="small">メール（1行1件）または /status 出力を貼り付け → メールを自動抽出して追加します（認証済みなら追加後に「今すぐ更新」で反映）。</div>
         <div style="height: 8px"></div>
         <textarea id="addText" placeholder="user@example.com&#10;another@example.com"></textarea>
         <div style="height: 8px"></div>
         <div class="row">
-          <label class="muted">Plan
+          <label class="muted">プラン
             <select id="addPlan">
               <option value="plus" selected>plus</option>
               <option value="pro">pro</option>
@@ -152,83 +153,128 @@ UI_HTML = """<!doctype html>
               <option value="enterprise">enterprise</option>
             </select>
           </label>
-          <label class="muted"><input id="addEnabled" type="checkbox" checked /> enabled</label>
+          <label class="muted"><input id="addEnabled" type="checkbox" checked /> 有効</label>
           <span id="addFound" class="small"></span>
         </div>
         <div style="height: 8px"></div>
         <pre id="addPreview" class="mono small" style="white-space: pre-wrap; margin: 0;"></pre>
         <div style="height: 10px"></div>
         <div class="row" style="justify-content: flex-end;">
-          <button id="addCancel">Cancel</button>
-          <button id="addSubmit">Add</button>
+          <button id="addCancel">キャンセル</button>
+          <button id="addSubmit">追加</button>
         </div>
       </div>
     </div>
     <div id="keysModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
       <div class="card">
         <div class="row" style="justify-content: space-between;">
-          <h2>Add Claude (Anthropic) keys</h2>
-          <button id="keysClose">Close</button>
+          <h2>Claude (Anthropic) キー追加</h2>
+          <button id="keysClose">閉じる</button>
         </div>
-        <div class="small">Paste Anthropic API keys (sk-ant-...). Optional: set Email for display. Keys are stored under accounts/&lt;label&gt;/.secrets/anthropic_api_key.txt.</div>
+        <div class="small">Anthropic API キー（sk-ant-...）を貼り付け（1行1件）。Email は表示用（任意）。キーは accounts/&lt;label&gt;/.secrets/anthropic_api_key.txt に保存します。</div>
         <div style="height: 8px"></div>
         <textarea id="keysText" placeholder="sk-ant-..."></textarea>
         <div style="height: 8px"></div>
 	        <div class="row">
-	          <label class="muted">Label prefix <input id="keysPrefix" value="claude" /></label>
-	          <label class="muted">Email <input id="keysEmail" placeholder="user@example.com" /></label>
-	          <label class="muted">Model <input id="keysModel" placeholder="claude-3-5-haiku-latest" /></label>
-	          <label class="muted">Note <input id="keysNote" placeholder="team /用途" /></label>
-	          <label class="muted"><input id="keysEnabled" type="checkbox" checked /> enabled</label>
+	          <label class="muted">ラベル接頭辞 <input id="keysPrefix" value="claude" /></label>
+	          <label class="muted">メール（任意） <input id="keysEmail" placeholder="user@example.com" /></label>
+	          <label class="muted">モデル（任意） <input id="keysModel" placeholder="claude-3-5-haiku-latest" /></label>
+	          <label class="muted">メモ（任意） <input id="keysNote" placeholder="team /用途" /></label>
+	          <label class="muted"><input id="keysEnabled" type="checkbox" checked /> 有効</label>
 	          <span id="keysFound" class="small"></span>
 	        </div>
         <div style="height: 8px"></div>
         <pre id="keysPreview" class="mono small" style="white-space: pre-wrap; margin: 0;"></pre>
         <div style="height: 10px"></div>
 	        <div class="row" style="justify-content: flex-end;">
-	          <button id="keysCancel">Cancel</button>
-	          <button id="keysSubmit">Add</button>
+	          <button id="keysCancel">キャンセル</button>
+	          <button id="keysSubmit">追加</button>
 	        </div>
 	      </div>
 	    </div>
 	    <div id="fwModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
 	      <div class="card">
 	        <div class="row" style="justify-content: space-between;">
-	          <h2>Add Fireworks keys</h2>
-	          <button id="fwClose">Close</button>
+	          <h2>Fireworks キー追加</h2>
+	          <button id="fwClose">閉じる</button>
 	        </div>
-	        <div class="small">Paste Fireworks API keys (one per line). Optional: set Email for display. Keys are stored under accounts/&lt;label&gt;/.secrets/fireworks_api_key.txt.</div>
+	        <div class="small">Fireworks API キー（1行1件）を貼り付け。Email は表示用（任意）。キーは accounts/&lt;label&gt;/.secrets/fireworks_api_key.txt に保存します。</div>
 	        <div style="height: 8px"></div>
 	        <textarea id="fwText" placeholder="YOUR_FIREWORKS_API_KEY"></textarea>
 	        <div style="height: 8px"></div>
 	        <div class="row">
-	          <label class="muted">Label prefix <input id="fwPrefix" value="fireworks" /></label>
-	          <label class="muted">Email <input id="fwEmail" placeholder="user@example.com" /></label>
-	          <label class="muted">Model <input id="fwModel" placeholder="accounts/fireworks/models/llama-v3p1-8b-instruct" /></label>
-	          <label class="muted">Base URL <input id="fwBaseUrl" placeholder="https://api.fireworks.ai/inference/v1" /></label>
-	          <label class="muted">Note <input id="fwNote" placeholder="team /用途" /></label>
-	          <label class="muted"><input id="fwEnabled" type="checkbox" checked /> enabled</label>
+	          <label class="muted">ラベル接頭辞 <input id="fwPrefix" value="fireworks" /></label>
+	          <label class="muted">メール（任意） <input id="fwEmail" placeholder="user@example.com" /></label>
+	          <label class="muted">モデル（任意） <input id="fwModel" placeholder="accounts/fireworks/models/llama-v3p1-8b-instruct" /></label>
+	          <label class="muted">Base URL（任意） <input id="fwBaseUrl" placeholder="https://api.fireworks.ai/inference/v1" /></label>
+	          <label class="muted">メモ（任意） <input id="fwNote" placeholder="team /用途" /></label>
+	          <label class="muted"><input id="fwEnabled" type="checkbox" checked /> 有効</label>
 	          <span id="fwFound" class="small"></span>
 	        </div>
 	        <div style="height: 8px"></div>
 	        <pre id="fwPreview" class="mono small" style="white-space: pre-wrap; margin: 0;"></pre>
 	        <div style="height: 10px"></div>
 	        <div class="row" style="justify-content: flex-end;">
-	          <button id="fwCancel">Cancel</button>
-	          <button id="fwSubmit">Add</button>
+	          <button id="fwCancel">キャンセル</button>
+	          <button id="fwSubmit">追加</button>
+	        </div>
+	      </div>
+	    </div>
+	    <div id="loginModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
+	      <div class="card">
+	        <div class="row" style="justify-content: space-between;">
+	          <h2>Codex ログイン（デバイス認証）</h2>
+	          <button id="loginClose">閉じる</button>
+	        </div>
+	        <div class="small">1) リンクを開いてサインイン → 2) コードを入力（15分で失効）。</div>
+	        <div style="height: 8px"></div>
+	        <div class="row">
+	          <span class="muted">対象</span>
+	          <span id="loginTarget" class="mono"></span>
+	        </div>
+	        <div style="height: 8px"></div>
+	        <div class="row">
+	          <label class="muted">切替
+	            <select id="loginSelect"></select>
+	          </label>
+	          <label class="muted">ラベル/メール <input id="loginInput" placeholder="acc_xxx / user@example.com" /></label>
+	          <button id="loginApply" class="tablebtn">セット</button>
+	        </div>
+	        <div style="height: 8px"></div>
+	        <div id="loginMsg" class="small muted"></div>
+	        <div id="loginErr" class="small bad"></div>
+	        <div style="height: 8px"></div>
+	        <div class="row">
+	          <button id="loginOpenUrl" class="tablebtn">リンクを開く</button>
+	          <button id="loginCopyUrl" class="tablebtn">URLコピー</button>
+	          <input id="loginUrl" class="mono" readonly style="flex: 1; min-width: 240px;" placeholder="https://auth.openai.com/codex/device" />
+	        </div>
+	        <div style="height: 8px"></div>
+	        <div class="row">
+	          <button id="loginCopyCode" class="tablebtn">コードコピー</button>
+	          <input id="loginCode" class="mono" readonly style="width: 140px;" placeholder="XXXX-XXXXX" />
+	          <span class="small muted">※コードは共有しないでください</span>
+	        </div>
+	        <div style="height: 8px"></div>
+	        <pre id="loginOutput" class="mono small" style="white-space: pre-wrap; margin: 0;"></pre>
+	        <div style="height: 10px"></div>
+	        <div class="row" style="justify-content: flex-end;">
+	          <button id="loginStop" class="danger">中止</button>
+	          <button id="loginCancel">キャンセル</button>
+	          <button id="loginStart">開始</button>
 	        </div>
 	      </div>
 	    </div>
 	    <div id="noteModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
 	      <div class="card">
 	        <div class="row" style="justify-content: space-between;">
-	          <h2>Edit account</h2>
-	          <button id="noteClose">Close</button>
+	          <h2>アカウント編集</h2>
+	          <button id="noteClose">閉じる</button>
 	        </div>
-	        <div class="small">Edit expected email / note / enabled (saved into accounts.json + registry).</div>
+	        <div class="small">想定メール / メモ / 有効を編集（accounts.json + registry に保存）。</div>
 	        <div style="height: 8px"></div>
 		        <div class="row">
-		          <span class="muted">Target</span>
+		          <span class="muted">対象</span>
 		          <span id="noteTarget" class="mono"></span>
 		        </div>
 		        <div style="height: 8px"></div>
@@ -236,36 +282,36 @@ UI_HTML = """<!doctype html>
 		        <div id="noteErr" class="small bad"></div>
 		        <div style="height: 8px"></div>
 		        <div class="row">
-		          <label class="muted">Email (expected) <input id="editEmail" placeholder="user@example.com" /></label>
-		          <label class="muted"><input id="editEnabled" type="checkbox" checked /> enabled</label>
+		          <label class="muted">想定メール <input id="editEmail" placeholder="user@example.com" /></label>
+		          <label class="muted"><input id="editEnabled" type="checkbox" checked /> 有効</label>
 		        </div>
 	        <div style="height: 8px"></div>
 	        <div class="row">
-	          <label class="muted">Append <input id="noteAppend" placeholder="comment" /></label>
-	          <label class="muted">Separator <input id="noteSep" value=" · " /></label>
-	          <button id="editAppendBtn" class="tablebtn" title="Append to note" aria-label="Append to note">＋</button>
+	          <label class="muted">追記 <input id="noteAppend" placeholder="comment" /></label>
+	          <label class="muted">区切り <input id="noteSep" value=" · " /></label>
+	          <button id="editAppendBtn" class="tablebtn" title="メモに追記" aria-label="メモに追記">＋</button>
 	        </div>
 	        <div style="height: 8px"></div>
-	        <div class="small muted">Note</div>
-	        <textarea id="editNote" placeholder="用途 / memo"></textarea>
+	        <div class="small muted">メモ</div>
+	        <textarea id="editNote" placeholder="用途 / メモ"></textarea>
 	        <div style="height: 10px"></div>
 	        <div class="row" style="justify-content: flex-end;">
-	          <button id="noteClear" class="danger">Clear note</button>
-	          <button id="noteCancel">Cancel</button>
-	          <button id="noteSave">Save</button>
+	          <button id="noteClear" class="danger">メモをクリア</button>
+	          <button id="noteCancel">キャンセル</button>
+	          <button id="noteSave">保存</button>
 	        </div>
 	      </div>
 	    </div>
 	    <div id="removeModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
 	      <div class="card">
 	        <div class="row" style="justify-content: space-between;">
-	          <h2>Remove account</h2>
-	          <button id="removeClose">Close</button>
+	          <h2>アカウント削除</h2>
+	          <button id="removeClose">閉じる</button>
 	        </div>
-	        <div class="small">Remove this row from accounts.json + registry. Optional: delete local data / purge history.</div>
+	        <div class="small">accounts.json + registry からこの行を削除します（必要ならローカルデータ削除 / 履歴削除）。</div>
 	        <div style="height: 8px"></div>
 		        <div class="row">
-		          <span class="muted">Target</span>
+		          <span class="muted">対象</span>
 		          <span id="removeTarget" class="mono"></span>
 		        </div>
 		        <div style="height: 8px"></div>
@@ -273,13 +319,13 @@ UI_HTML = """<!doctype html>
 		        <div id="removeErr" class="small bad"></div>
 		        <div style="height: 8px"></div>
 		        <div class="row">
-		          <label class="muted"><input id="removeLocal" type="checkbox" /> delete local data</label>
-		          <label class="muted"><input id="removePurge" type="checkbox" /> purge history</label>
+		          <label class="muted"><input id="removeLocal" type="checkbox" /> ローカルデータを削除</label>
+		          <label class="muted"><input id="removePurge" type="checkbox" /> 履歴を削除</label>
 		        </div>
 	        <div style="height: 10px"></div>
 	        <div class="row" style="justify-content: flex-end;">
-	          <button id="removeCancel">Cancel</button>
-	          <button id="removeDo" class="danger">Remove</button>
+	          <button id="removeCancel">キャンセル</button>
+	          <button id="removeDo" class="danger">削除</button>
 	        </div>
 	      </div>
 	    </div>
@@ -293,6 +339,7 @@ UI_HTML = """<!doctype html>
 		      const addBtn = $("add");
 		      const addKeysBtn = $("addKeys");
 		      const addFwBtn = $("addFw");
+		      const openLoginBtn = $("openLogin");
 	      const viewModeEl = $("viewMode");
 	      const resetSortBtn = $("resetSort");
 	      const filterEl = $("filter");
@@ -330,6 +377,23 @@ UI_HTML = """<!doctype html>
 		      const fwEnabled = $("fwEnabled");
 		      const fwFound = $("fwFound");
 		      const fwPreview = $("fwPreview");
+		      const loginModal = $("loginModal");
+		      const loginClose = $("loginClose");
+		      const loginCancel = $("loginCancel");
+		      const loginStart = $("loginStart");
+		      const loginStop = $("loginStop");
+		      const loginTarget = $("loginTarget");
+		      const loginMsg = $("loginMsg");
+		      const loginErr = $("loginErr");
+		      const loginOpenUrl = $("loginOpenUrl");
+		      const loginCopyUrl = $("loginCopyUrl");
+		      const loginUrl = $("loginUrl");
+		      const loginCopyCode = $("loginCopyCode");
+		      const loginCode = $("loginCode");
+		      const loginOutput = $("loginOutput");
+		      const loginSelect = $("loginSelect");
+		      const loginInput = $("loginInput");
+		      const loginApply = $("loginApply");
 			      const noteModal = $("noteModal");
 			      const noteClose = $("noteClose");
 			      const noteCancel = $("noteCancel");
@@ -358,6 +422,8 @@ UI_HTML = """<!doctype html>
 	      let refreshing = false;
 	      let viewMode = "all"; // all | subscription | credits
 	      let noteLabel = "";
+	      let loginLabel = "";
+	      let loginPollTimer = null;
 	      let removeLabel = "";
 	      let sortKey = null;
 	      let sortDir = "asc"; // asc | desc
@@ -723,6 +789,25 @@ UI_HTML = """<!doctype html>
         }
       }
 
+      function stopLoginPolling() {
+        if (loginPollTimer) {
+          try { clearInterval(loginPollTimer); } catch {}
+          loginPollTimer = null;
+        }
+      }
+
+      function setLoginModalOpen(open) {
+        if (!loginModal) return;
+        if (open) {
+          loginModal.classList.add("open");
+          loginModal.setAttribute("aria-hidden", "false");
+        } else {
+          loginModal.classList.remove("open");
+          loginModal.setAttribute("aria-hidden", "true");
+          stopLoginPolling();
+        }
+      }
+
       function setNoteModalOpen(open) {
         if (open) {
           noteModal.classList.add("open");
@@ -774,6 +859,7 @@ UI_HTML = """<!doctype html>
 	        setModalOpen(false);
 	        setKeysModalOpen(false);
 	        setFwModalOpen(false);
+	        setLoginModalOpen(false);
 	        setRemoveModalOpen(false);
         setNoteModalOpen(true);
       }
@@ -795,8 +881,279 @@ UI_HTML = """<!doctype html>
 	        setModalOpen(false);
 	        setKeysModalOpen(false);
 	        setFwModalOpen(false);
+	        setLoginModalOpen(false);
 	        setNoteModalOpen(false);
         setRemoveModalOpen(true);
+      }
+
+      function _loginTargetText(label) {
+        const it = _findByLabel(label);
+        const parsed = it ? (it.parsed || {}) : {};
+        const norm = parsed.normalized || {};
+        const reg = it ? (it.registry || {}) : {};
+        const email = String(norm.account_email || norm.expected_email || reg.expected_email || "").trim();
+        return email ? `${label} (${email})` : label;
+      }
+
+      function _isCodexProviderLc(providerLc) {
+        const p = String(providerLc || "").trim().toLowerCase();
+        return p === "codex" || p === "openai_codex" || p === "openai";
+      }
+
+      function _makeLabelFromEmail(email) {
+        const e = String(email || "").trim().toLowerCase();
+        const s = e.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+        return `acc_${s || "account"}`;
+      }
+
+      function _labelFromInput(raw) {
+        const s = String(raw || "").trim();
+        if (!s) return "";
+        if (s.includes("@")) {
+          const e = s.toLowerCase();
+          const items = Array.isArray(cachedItems) ? cachedItems : [];
+          for (const it of items) {
+            const provider = _providerKey(it);
+            if (!_isCodexProviderLc(provider)) continue;
+            const parsed = it && it.parsed ? it.parsed : {};
+            const norm = (parsed && parsed.normalized) ? parsed.normalized : {};
+            const reg = it && it.registry ? it.registry : {};
+            const em = String(norm.account_email || norm.expected_email || reg.expected_email || "").trim().toLowerCase();
+            if (em && em === e) return String(it && it.account_label ? it.account_label : "");
+          }
+          return _makeLabelFromEmail(e);
+        }
+        return s;
+      }
+
+      function _codexLabels() {
+        const items = Array.isArray(cachedItems) ? cachedItems : [];
+        const out = [];
+        const seen = new Set();
+        for (const it of items) {
+          const label = String(it && it.account_label ? it.account_label : "");
+          if (!label || seen.has(label)) continue;
+          const provider = _providerKey(it);
+          if (!_isCodexProviderLc(provider)) continue;
+          seen.add(label);
+          out.push(label);
+        }
+        try { out.sort((a, b) => _cmpText(a, b, "asc")); } catch { out.sort(); }
+        return out;
+      }
+
+      function renderLoginSelect(selectedLabel=null) {
+        if (!loginSelect) return;
+        const labels = _codexLabels();
+        loginSelect.innerHTML = labels.map((l) => `<option value="${esc(l)}">${esc(_loginTargetText(l))}</option>`).join("");
+        if (selectedLabel && labels.includes(selectedLabel)) loginSelect.value = selectedLabel;
+      }
+
+      async function _copyText(text) {
+        const s = String(text || "");
+        if (!s) return false;
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(s);
+            return true;
+          }
+        } catch {}
+        try {
+          const el = document.createElement("textarea");
+          el.value = s;
+          el.setAttribute("readonly", "true");
+          el.style.position = "fixed";
+          el.style.top = "-1000px";
+          el.style.opacity = "0";
+          document.body.appendChild(el);
+          el.select();
+          document.execCommand("copy");
+          document.body.removeChild(el);
+          return true;
+        } catch {}
+        return false;
+      }
+
+      function _renderLoginStatus(data) {
+        const state = data && data.state ? String(data.state) : "idle";
+        const url = data && data.device_url ? String(data.device_url) : "https://auth.openai.com/codex/device";
+        const code = data && data.user_code ? String(data.user_code) : "";
+        const authExists = !!(data && data.auth_exists);
+        const err = data && data.error ? String(data.error) : "";
+
+        if (loginUrl) loginUrl.value = url;
+        if (loginCode) loginCode.value = code;
+        if (loginErr) loginErr.textContent = "";
+
+        const tail = Array.isArray(data && data.output_tail) ? data.output_tail : [];
+        if (loginOutput) loginOutput.textContent = tail.slice(-80).join("\\n");
+
+        if (loginStop) loginStop.disabled = !(state === "running");
+        if (loginStart) loginStart.disabled = (state === "running");
+
+        if (state === "done") {
+          if (loginMsg) loginMsg.textContent = authExists ? "ログイン完了。更新します…" : "ログイン完了。";
+          stopLoginPolling();
+        } else if (state === "running") {
+          if (loginMsg) loginMsg.textContent = code ? "コード発行済み。ブラウザで認証してください。" : "ログイン開始中…";
+        } else if (state === "error") {
+          if (loginMsg) loginMsg.textContent = "ログイン失敗";
+          if (loginErr) loginErr.textContent = err || "error";
+          stopLoginPolling();
+        } else if (state === "canceled") {
+          if (loginMsg) loginMsg.textContent = "中止しました";
+          stopLoginPolling();
+        } else {
+          if (loginMsg) loginMsg.textContent = "準備中…";
+        }
+      }
+
+      async function _loadLoginStatusOnce() {
+        if (!loginLabel) return null;
+        const res = await fetch(`/codex/login/status?label=${encodeURIComponent(loginLabel)}`, { method: "GET" });
+        let body = null;
+        try { body = await res.json(); } catch {}
+        if (!res.ok) {
+          const msg = body && body.detail ? String(body.detail) : `HTTP ${res.status}`;
+          throw new Error(msg);
+        }
+        return body || {};
+      }
+
+      function _startLoginPolling() {
+        stopLoginPolling();
+        loginPollTimer = setInterval(() => {
+          if (!loginModal || !loginModal.classList.contains("open")) return;
+          _loadLoginStatusOnce()
+            .then((body) => {
+              _renderLoginStatus(body || {});
+              const st = body && body.state ? String(body.state) : "";
+              const authExists = !!(body && body.auth_exists);
+              if (st === "done" && authExists) {
+                updateNow(loginLabel).finally(() => setLoginModalOpen(false));
+              }
+            })
+            .catch((e) => {
+              if (loginErr) loginErr.textContent = String(e && e.message ? e.message : e);
+            });
+        }, 1200);
+      }
+
+      async function startLogin(force=false) {
+        if (!loginLabel) return;
+        if (loginErr) loginErr.textContent = "";
+        if (loginMsg) loginMsg.textContent = "ログイン開始中…";
+        if (loginStart) loginStart.disabled = true;
+        try {
+          const payload = { label: loginLabel, force: !!force };
+          const res = await fetch("/codex/login/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          let body = null;
+          try { body = await res.json(); } catch {}
+          if (!res.ok) {
+            const msg = body && body.detail ? String(body.detail) : `HTTP ${res.status}`;
+            throw new Error(msg);
+          }
+          _renderLoginStatus(body || {});
+          _startLoginPolling();
+        } catch (e) {
+          if (loginMsg) loginMsg.textContent = "ログイン開始失敗";
+          if (loginErr) loginErr.textContent = String(e && e.message ? e.message : e);
+          if (loginStart) loginStart.disabled = false;
+        }
+      }
+
+      async function cancelLogin() {
+        if (!loginLabel) return;
+        if (loginErr) loginErr.textContent = "";
+        if (loginMsg) loginMsg.textContent = "中止中…";
+        if (loginStop) loginStop.disabled = true;
+        try {
+          const res = await fetch("/codex/login/cancel", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ label: loginLabel }),
+          });
+          let body = null;
+          try { body = await res.json(); } catch {}
+          if (!res.ok) {
+            const msg = body && body.detail ? String(body.detail) : `HTTP ${res.status}`;
+            throw new Error(msg);
+          }
+          _renderLoginStatus(body || {});
+        } catch (e) {
+          if (loginErr) loginErr.textContent = String(e && e.message ? e.message : e);
+          if (loginStop) loginStop.disabled = false;
+        }
+      }
+
+      function openLogin(label) {
+        loginLabel = String(label || "");
+        if (!loginLabel) return;
+        renderLoginSelect(loginLabel);
+        if (loginInput) loginInput.value = loginLabel;
+        if (loginTarget) loginTarget.textContent = _loginTargetText(loginLabel);
+        if (loginMsg) loginMsg.textContent = "";
+        if (loginErr) loginErr.textContent = "";
+        if (loginUrl) loginUrl.value = "";
+        if (loginCode) loginCode.value = "";
+        if (loginOutput) loginOutput.textContent = "";
+
+        setModalOpen(false);
+        setKeysModalOpen(false);
+        setFwModalOpen(false);
+        setNoteModalOpen(false);
+        setRemoveModalOpen(false);
+        setLoginModalOpen(true);
+        startLogin(false);
+      }
+
+      function openLoginFromToolbar() {
+        const labels = _codexLabels();
+        renderLoginSelect(null);
+        stopLoginPolling();
+
+        let chosen = "";
+        if (labels.length) {
+          chosen = labels[0];
+          for (const l of labels) {
+            const it = _findByLabel(l);
+            if (it && classify(it) === "auth_required") { chosen = l; break; }
+          }
+        }
+
+        loginLabel = chosen;
+        if (loginInput) loginInput.value = chosen || "";
+        if (loginSelect && chosen) {
+          try { loginSelect.value = chosen; } catch {}
+        }
+        if (loginTarget) loginTarget.textContent = chosen ? _loginTargetText(chosen) : "(Codex アカウントなし)";
+        if (loginMsg) loginMsg.textContent = labels.length ? "" : "Codex アカウントがありません（まず「アカウント追加」してください）";
+        if (loginErr) loginErr.textContent = "";
+        if (loginUrl) loginUrl.value = "";
+        if (loginCode) loginCode.value = "";
+        if (loginOutput) loginOutput.textContent = "";
+
+        setModalOpen(false);
+        setKeysModalOpen(false);
+        setFwModalOpen(false);
+        setNoteModalOpen(false);
+        setRemoveModalOpen(false);
+        setLoginModalOpen(true);
+
+        if (!chosen) {
+          if (loginStart) loginStart.disabled = true;
+          if (loginStop) loginStop.disabled = true;
+          return;
+        }
+        if (loginStart) loginStart.disabled = false;
+        if (loginStop) loginStop.disabled = true;
+        _loadLoginStatusOnce().then((body) => _renderLoginStatus(body || {})).catch((e) => {
+          if (loginErr) loginErr.textContent = String(e && e.message ? e.message : e);
+        });
       }
 
       function appendToEditNote() {
@@ -821,8 +1178,8 @@ UI_HTML = """<!doctype html>
 	        noteCancel.disabled = true;
 	        noteClose.disabled = true;
 	        if (noteClear) noteClear.disabled = true;
-	        statusEl.textContent = "Saving note...";
-	        if (noteMsg) noteMsg.textContent = "Saving…";
+	        statusEl.textContent = "メモを保存中...";
+	        if (noteMsg) noteMsg.textContent = "保存中…";
 	        if (noteErr) noteErr.textContent = "";
 	        try {
           const payload = {
@@ -857,10 +1214,10 @@ UI_HTML = """<!doctype html>
           noteLabel = "";
           renderFromCache();
           await loadLatest();
-          lastUpdateText = `Note updated — ${new Date().toLocaleTimeString()}`;
+          lastUpdateText = `メモ更新 — ${new Date().toLocaleTimeString()}`;
           renderFromCache();
 	        } catch (e) {
-	          statusEl.textContent = `Note error: ${e}`;
+	          statusEl.textContent = `メモエラー: ${e}`;
 	          if (noteMsg) noteMsg.textContent = "";
 	          if (noteErr) noteErr.textContent = String(e || "");
 	        } finally {
@@ -873,7 +1230,7 @@ UI_HTML = """<!doctype html>
 
       async function clearNote() {
         if (!noteLabel) return;
-        const ok = confirm("Clear note for this account?");
+        const ok = confirm("このアカウントのメモをクリアしますか？");
         if (!ok) return;
 
         const emailText = (editEmail && editEmail.value) ? String(editEmail.value).trim() : "";
@@ -883,8 +1240,8 @@ UI_HTML = """<!doctype html>
 	        noteCancel.disabled = true;
 	        noteClose.disabled = true;
 	        if (noteClear) noteClear.disabled = true;
-	        statusEl.textContent = "Clearing note...";
-	        if (noteMsg) noteMsg.textContent = "Clearing…";
+	        statusEl.textContent = "メモをクリア中...";
+	        if (noteMsg) noteMsg.textContent = "クリア中…";
 	        if (noteErr) noteErr.textContent = "";
 	        try {
           const payload = { account_label: noteLabel, expected_email: emailText, enabled, note: "" };
@@ -913,10 +1270,10 @@ UI_HTML = """<!doctype html>
           noteLabel = "";
           renderFromCache();
           await loadLatest();
-          lastUpdateText = `Note cleared — ${new Date().toLocaleTimeString()}`;
+          lastUpdateText = `メモクリア — ${new Date().toLocaleTimeString()}`;
           renderFromCache();
 	        } catch (e) {
-	          statusEl.textContent = `Note clear error: ${e}`;
+	          statusEl.textContent = `メモクリアエラー: ${e}`;
 	          if (noteMsg) noteMsg.textContent = "";
 	          if (noteErr) noteErr.textContent = String(e || "");
 	        } finally {
@@ -932,16 +1289,16 @@ UI_HTML = """<!doctype html>
         const delLocal = !!(removeLocal && removeLocal.checked);
         const purge = !!(removePurge && removePurge.checked);
         const msg = (delLocal || purge)
-          ? "Remove this account? (local data / history deletion is irreversible)"
-          : "Remove this account from the list?";
+          ? "このアカウントを削除しますか？（ローカルデータ/履歴の削除は元に戻せません）"
+          : "一覧からこのアカウントを削除しますか？";
         const ok = confirm(msg);
         if (!ok) return;
 
 	        removeDo.disabled = true;
 	        removeCancel.disabled = true;
 	        removeClose.disabled = true;
-	        statusEl.textContent = "Removing account...";
-	        if (removeMsg) removeMsg.textContent = "Removing…";
+	        statusEl.textContent = "削除中...";
+	        if (removeMsg) removeMsg.textContent = "削除中…";
 	        if (removeErr) removeErr.textContent = "";
 	        try {
           const target = removeLabel;
@@ -974,13 +1331,13 @@ UI_HTML = """<!doctype html>
 
           const removed = body && Array.isArray(body.removed) ? body.removed : [];
           const missing = body && Array.isArray(body.missing) ? body.missing : [];
-          const removedMsg = removed.length ? `removed:${removed.length}` : "";
-          const missingMsg = missing.length ? `missing:${missing.length}` : "";
+          const removedMsg = removed.length ? `削除:${removed.length}` : "";
+          const missingMsg = missing.length ? `未検出:${missing.length}` : "";
           const extra = (removedMsg || missingMsg) ? ` (${[removedMsg, missingMsg].filter(Boolean).join(" ")})` : "";
-          lastUpdateText = `Removed — ${new Date().toLocaleTimeString()}${extra}`;
+          lastUpdateText = `削除 — ${new Date().toLocaleTimeString()}${extra}`;
           renderFromCache();
 	        } catch (e) {
-	          statusEl.textContent = `Remove error: ${e}`;
+	          statusEl.textContent = `削除エラー: ${e}`;
 	          if (removeMsg) removeMsg.textContent = "";
 	          if (removeErr) removeErr.textContent = String(e || "");
 	        } finally {
@@ -1042,19 +1399,19 @@ UI_HTML = """<!doctype html>
 
       function renderAddPreview() {
         const emails = extractEmails(addText.value || "");
-        addFound.textContent = emails.length ? `Found ${emails.length}` : "Found 0";
+        addFound.textContent = emails.length ? `検出: ${emails.length}件` : "検出: 0件";
         addPreview.textContent = emails.slice(0, 200).join("\\n");
       }
 
       function renderKeysPreview() {
         const keys = extractAnthropicKeys(keysText.value || "");
-        keysFound.textContent = keys.length ? `Found ${keys.length}` : "Found 0";
+        keysFound.textContent = keys.length ? `検出: ${keys.length}件` : "検出: 0件";
         keysPreview.textContent = keys.slice(0, 200).map(maskKey).join("\\n");
       }
 
       function renderFwPreview() {
         const keys = extractFireworksKeys(fwText.value || "");
-        fwFound.textContent = keys.length ? `Found ${keys.length}` : "Found 0";
+        fwFound.textContent = keys.length ? `検出: ${keys.length}件` : "検出: 0件";
         fwPreview.textContent = keys.slice(0, 200).map(maskKey).join("\\n");
       }
 
@@ -1101,29 +1458,29 @@ UI_HTML = """<!doctype html>
 
         let state = "";
         const cls = classify(item);
-        if (cls === "disabled") state = pill("disabled", false);
-        else if (cls === "pending") state = pill("pending", false);
-        else if (cls === "no_parsed") state = pill("no parsed", false);
-        else if (cls === "auth_required") state = pill("auth required", false, parsed ? parsed.error : "");
+        if (cls === "disabled") state = pill("無効", false);
+        else if (cls === "pending") state = pill("未取得", false);
+        else if (cls === "no_parsed") state = pill("未解析", false);
+        else if (cls === "auth_required") state = pill("要ログイン", false, parsed ? parsed.error : "");
         else if (cls === "probe_error") {
           const statusCode = parsed && parsed.http_status !== undefined ? Number(parsed.http_status) : null;
           const status = Number.isFinite(statusCode) ? statusCode : null;
           const errText = parsed ? String(parsed.error || "").trim() : "";
           if (providerLc.startsWith("fireworks") && status === 412 && /suspended/i.test(errText)) {
-            state = pill("suspended", false, errText);
+            state = pill("停止中", false, errText);
           } else {
-            state = pill("error", false, errText);
+            state = pill("エラー", false, errText);
           }
         }
-        else state = pill("ok", true);
+        else state = pill("OK", true);
 
         const expectedMatch = norm.expected_email_match;
-        const accountMain = email ? email : (isApiProvider ? (apiKeyHint || "(api key)") : "(unknown)");
+        const accountMain = email ? email : (isApiProvider ? (apiKeyHint || "(APIキー)") : "(不明)");
         let accountLineHtml = esc(safe(accountMain, "-"));
         if (!norm.account_email && (norm.expected_email || regEmail)) {
-          accountLineHtml += " " + pill("expected", true);
+          accountLineHtml += " " + pill("想定", true);
         } else if (typeof expectedMatch === "boolean") {
-          accountLineHtml += " " + (expectedMatch ? pill("email ok", true) : pill("email mismatch", false));
+          accountLineHtml += " " + (expectedMatch ? pill("メール一致", true) : pill("メール不一致", false));
         }
         if (isApiProvider && apiKeyHint && email) {
           accountLineHtml += `<span class="muted"> · ${esc(apiKeyHint)}</span>`;
@@ -1160,7 +1517,7 @@ UI_HTML = """<!doctype html>
             const title = `balance ${txt}` + (credits.source ? ` (via ${credits.source})` : "");
             creditsHtml = `<span class="credit ${cls} mono" title="${esc(title)}">${esc(txt)}</span>`;
           } else if (credits && credits.error) {
-            creditsHtml = `<span class="mono muted" title="balance error">${esc(String(credits.error))}</span>`;
+            creditsHtml = `<span class="mono muted" title="残高エラー">${esc(String(credits.error))}</span>`;
           }
         }
 
@@ -1227,7 +1584,7 @@ UI_HTML = """<!doctype html>
         const extraKeys = keys.slice(maxChips);
         for (const k of displayKeys) addLimitBlock(k, windows[k]);
         if (extraKeys.length) {
-          limitBlocks.push(`<span class="limit more" title="${esc("more: " + extraKeys.join(", "))}"><span class="mono name">+${extraKeys.length}</span></span>`);
+          limitBlocks.push(`<span class="limit more" title="${esc("その他: " + extraKeys.join(", "))}"><span class="mono name">+${extraKeys.length}</span></span>`);
         }
         const limitsHtml = limitBlocks.length ? `<span class="limits">${limitBlocks.join("")}</span>` : "-";
 
@@ -1265,6 +1622,11 @@ UI_HTML = """<!doctype html>
           else if (c === "warn") rowCls = "row-warn";
         }
 
+        const showLogin = (providerLc === "codex" || providerLc === "openai_codex" || providerLc === "openai");
+        const loginBtnHtml = showLogin
+          ? `<button class="tablebtn" title="ログイン" aria-label="ログイン" data-action="login" data-label="${encodeURIComponent(safe(item.account_label))}">Login</button>`
+          : "";
+
         return `
           <tr class="${rowCls}">
             <td>${providerHtml}</td>
@@ -1275,9 +1637,10 @@ UI_HTML = """<!doctype html>
             <td class="mono nowrap col-credits">${creditsHtml}</td>
             <td>${state}</td>
             <td>
-              <button class="tablebtn" title="Update" aria-label="Update" data-action="update" data-label="${encodeURIComponent(safe(item.account_label))}">↻</button>
-              <button class="tablebtn" title="Edit" aria-label="Edit" data-action="note" data-label="${encodeURIComponent(safe(item.account_label))}">✎</button>
-              <button class="tablebtn danger" title="Remove" aria-label="Remove" data-action="remove" data-label="${encodeURIComponent(safe(item.account_label))}">✕</button>
+              ${loginBtnHtml}
+              <button class="tablebtn" title="更新" aria-label="更新" data-action="update" data-label="${encodeURIComponent(safe(item.account_label))}">↻</button>
+              <button class="tablebtn" title="編集" aria-label="編集" data-action="note" data-label="${encodeURIComponent(safe(item.account_label))}">✎</button>
+              <button class="tablebtn danger" title="削除" aria-label="削除" data-action="remove" data-label="${encodeURIComponent(safe(item.account_label))}">✕</button>
             </td>
           </tr>
         `;
@@ -1333,14 +1696,15 @@ UI_HTML = """<!doctype html>
           else if (s === "disabled") counts.disabled += 1;
           else counts.errors += 1;
 	        }
-	        summaryEl.textContent = `total:${counts.total} ok:${counts.ok} auth:${counts.auth_required} pending:${counts.pending} err:${counts.errors} disabled:${counts.disabled}`;
+	        summaryEl.textContent = `合計:${counts.total} OK:${counts.ok} 要ログイン:${counts.auth_required} 未取得:${counts.pending} エラー:${counts.errors} 無効:${counts.disabled}`;
 	        const suffix = lastUpdateText ? ` — ${lastUpdateText}` : "";
-	        statusEl.textContent = `${sorted.length}/${inView.length} rows${suffix}`;
+	        statusEl.textContent = `${sorted.length}/${inView.length}件${suffix}`;
+	        try { if (openLoginBtn) openLoginBtn.disabled = (_codexLabels().length === 0); } catch {}
 	      }
 
       async function loadLatest() {
         const started = Date.now();
-        statusEl.textContent = "Loading...";
+        statusEl.textContent = "読み込み中...";
         try {
           const res = await fetch("/latest", { cache: "no-store" });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1348,10 +1712,10 @@ UI_HTML = """<!doctype html>
           const items = Array.isArray(data.items) ? data.items : [];
           const ms = Date.now() - started;
           cachedItems = items;
-          lastUpdateText = `Updated ${new Date().toLocaleTimeString()} (${ms}ms)`;
+          lastUpdateText = `更新: ${new Date().toLocaleTimeString()} (${ms}ms)`;
           renderFromCache();
         } catch (e) {
-          statusEl.textContent = `Error: ${e}`;
+          statusEl.textContent = `エラー: ${e}`;
         }
       }
 
@@ -1364,14 +1728,14 @@ UI_HTML = """<!doctype html>
       async function addAccounts() {
         const emails = extractEmails(addText.value || "");
         if (!emails.length) {
-          addFound.textContent = "Found 0 (paste emails first)";
+          addFound.textContent = "検出: 0件（メールを貼り付けてください）";
           return;
         }
 
         addSubmit.disabled = true;
         addCancel.disabled = true;
         addClose.disabled = true;
-        statusEl.textContent = "Adding accounts...";
+        statusEl.textContent = "アカウント追加中...";
         try {
           const payload = {
             text: addText.value,
@@ -1397,10 +1761,10 @@ UI_HTML = """<!doctype html>
           await loadLatest();
           const added = body && typeof body.added === "number" ? body.added : 0;
           const updated = body && typeof body.updated === "number" ? body.updated : 0;
-          lastUpdateText = `Accounts updated — added:${added} updated:${updated} (login may be required)`;
+          lastUpdateText = `アカウント更新 — 追加:${added} 更新:${updated}（未ログインならログインが必要）`;
           renderFromCache();
         } catch (e) {
-          statusEl.textContent = `Add error: ${e}`;
+          statusEl.textContent = `追加エラー: ${e}`;
         } finally {
           addSubmit.disabled = false;
           addCancel.disabled = false;
@@ -1411,14 +1775,14 @@ UI_HTML = """<!doctype html>
       async function addClaudeKeys() {
         const keys = extractAnthropicKeys(keysText.value || "");
         if (!keys.length) {
-          keysFound.textContent = "Found 0 (paste sk-ant-... first)";
+          keysFound.textContent = "検出: 0件（sk-ant-... を貼り付けてください）";
           return;
         }
 
         keysSubmit.disabled = true;
         keysCancel.disabled = true;
         keysClose.disabled = true;
-        statusEl.textContent = "Adding Claude keys...";
+        statusEl.textContent = "Claude キー追加中...";
         try {
           const payload = {
             text: keysText.value,
@@ -1449,10 +1813,10 @@ UI_HTML = """<!doctype html>
           await loadLatest();
           const added = body && typeof body.added === "number" ? body.added : 0;
           const updated = body && typeof body.updated === "number" ? body.updated : 0;
-          lastUpdateText = `Claude keys updated — added:${added} updated:${updated}`;
+          lastUpdateText = `Claude キー更新 — 追加:${added} 更新:${updated}`;
           renderFromCache();
         } catch (e) {
-          statusEl.textContent = `Add error: ${e}`;
+          statusEl.textContent = `追加エラー: ${e}`;
         } finally {
           keysSubmit.disabled = false;
           keysCancel.disabled = false;
@@ -1463,14 +1827,14 @@ UI_HTML = """<!doctype html>
       async function addFireworksKeys() {
         const keys = extractFireworksKeys(fwText.value || "");
         if (!keys.length) {
-          fwFound.textContent = "Found 0 (paste keys first)";
+          fwFound.textContent = "検出: 0件（キーを貼り付けてください）";
           return;
         }
 
         fwSubmit.disabled = true;
         fwCancel.disabled = true;
         fwClose.disabled = true;
-        statusEl.textContent = "Adding Fireworks keys...";
+        statusEl.textContent = "Fireworks キー追加中...";
         try {
           const payload = {
             text: fwText.value,
@@ -1502,10 +1866,10 @@ UI_HTML = """<!doctype html>
           await loadLatest();
           const added = body && typeof body.added === "number" ? body.added : 0;
           const updated = body && typeof body.updated === "number" ? body.updated : 0;
-          lastUpdateText = `Fireworks keys updated — added:${added} updated:${updated}`;
+          lastUpdateText = `Fireworks キー更新 — 追加:${added} 更新:${updated}`;
           renderFromCache();
         } catch (e) {
-          statusEl.textContent = `Add error: ${e}`;
+          statusEl.textContent = `追加エラー: ${e}`;
         } finally {
           fwSubmit.disabled = false;
           fwCancel.disabled = false;
@@ -1522,7 +1886,7 @@ UI_HTML = """<!doctype html>
         const labelSuffix = label ? ` (${label})` : "";
         const renderRefreshing = () => {
           const sec = ((Date.now() - started) / 1000).toFixed(1);
-          statusEl.textContent = `Refreshing (fetching latest limits)${labelSuffix}… ${sec}s`;
+          statusEl.textContent = `更新中（最新リミット取得）${labelSuffix}… ${sec}s`;
         };
         renderRefreshing();
         const tick = setInterval(renderRefreshing, 250);
@@ -1540,14 +1904,14 @@ UI_HTML = """<!doctype html>
           await loadLatest();
 
           if (s) {
-            lastUpdateText = `Updated ${new Date().toLocaleTimeString()} — refresh ok:${s.ok} auth:${s.auth_required} err:${s.errors} (${ms}ms)`;
+            lastUpdateText = `更新: ${new Date().toLocaleTimeString()} — OK:${s.ok} 要ログイン:${s.auth_required} エラー:${s.errors} (${ms}ms)`;
           } else {
-            lastUpdateText = `Updated ${new Date().toLocaleTimeString()} — refresh done (${ms}ms)`;
+            lastUpdateText = `更新: ${new Date().toLocaleTimeString()} — 完了 (${ms}ms)`;
           }
           renderFromCache();
         } catch (e) {
           await loadLatest();
-          statusEl.textContent = `Refresh error: ${e}`;
+          statusEl.textContent = `更新エラー: ${e}`;
         } finally {
           clearInterval(tick);
           refreshing = false;
@@ -1556,12 +1920,12 @@ UI_HTML = """<!doctype html>
       }
 
       async function stopApp() {
-        const ok = confirm("Stop Codex Status Fleet now?\\n\\nStart again: ./scripts/up.sh\\nIf this fails: ./scripts/down.sh");
+        const ok = confirm("Codex Status Fleet を停止しますか？\\n\\n再起動: ./scripts/up.sh\\nうまくいかない場合: ./scripts/down.sh");
         if (!ok) return;
 
         try { if (stopBtn) stopBtn.disabled = true; } catch {}
         try { if (refreshBtn) refreshBtn.disabled = true; } catch {}
-        statusEl.textContent = "Stopping…";
+        statusEl.textContent = "停止中…";
         try {
           const res = await fetch("/admin/stop", {
             method: "POST",
@@ -1574,18 +1938,18 @@ UI_HTML = """<!doctype html>
             const msg = (body && (body.detail || body.error)) ? (body.detail || body.error) : `HTTP ${res.status}`;
             throw new Error(msg);
           }
-          statusEl.textContent = "Stopping… (this page will go offline)";
+          statusEl.textContent = "停止中…（このページはオフラインになります）";
 
           setTimeout(async () => {
             try {
               const r = await fetch("/healthz", { cache: "no-store" });
-              if (r.ok) statusEl.textContent = "Stop requested. If still running, use ./scripts/down.sh";
+              if (r.ok) statusEl.textContent = "停止を要求しました。まだ動いている場合は ./scripts/down.sh を実行してください";
             } catch {
-              statusEl.textContent = "Stopped.";
+              statusEl.textContent = "停止しました。";
             }
           }, 1200);
         } catch (e) {
-          statusEl.textContent = `Stop error: ${e}`;
+          statusEl.textContent = `停止エラー: ${e}`;
           try { if (stopBtn) stopBtn.disabled = false; } catch {}
           try { if (refreshBtn) refreshBtn.disabled = false; } catch {}
         }
@@ -1613,9 +1977,10 @@ UI_HTML = """<!doctype html>
 
 		      refreshBtn.addEventListener("click", updateNow);
 		      if (stopBtn) stopBtn.addEventListener("click", stopApp);
-	      addBtn.addEventListener("click", () => { setKeysModalOpen(false); setFwModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setModalOpen(true); });
-	      addKeysBtn.addEventListener("click", () => { setModalOpen(false); setFwModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setKeysModalOpen(true); });
-	      addFwBtn.addEventListener("click", () => { setModalOpen(false); setKeysModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setFwModalOpen(true); });
+	      addBtn.addEventListener("click", () => { setKeysModalOpen(false); setFwModalOpen(false); setLoginModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setModalOpen(true); });
+	      addKeysBtn.addEventListener("click", () => { setModalOpen(false); setFwModalOpen(false); setLoginModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setKeysModalOpen(true); });
+	      addFwBtn.addEventListener("click", () => { setModalOpen(false); setKeysModalOpen(false); setLoginModalOpen(false); setNoteModalOpen(false); setRemoveModalOpen(false); setFwModalOpen(true); });
+	      if (openLoginBtn) openLoginBtn.addEventListener("click", openLoginFromToolbar);
       addClose.addEventListener("click", () => setModalOpen(false));
       addCancel.addEventListener("click", () => setModalOpen(false));
       addSubmit.addEventListener("click", addAccounts);
@@ -1636,6 +2001,69 @@ UI_HTML = """<!doctype html>
       fwText.addEventListener("input", renderFwPreview);
       fwModal.addEventListener("click", (ev) => {
         if (ev.target === fwModal) setFwModalOpen(false);
+      });
+      loginClose.addEventListener("click", () => setLoginModalOpen(false));
+      loginCancel.addEventListener("click", () => setLoginModalOpen(false));
+      loginStart.addEventListener("click", () => startLogin(false));
+      loginStop.addEventListener("click", cancelLogin);
+      loginOpenUrl.addEventListener("click", () => {
+        const url = (loginUrl && loginUrl.value) ? String(loginUrl.value).trim() : "";
+        if (!url) return;
+        try { window.open(url, "_blank", "noopener,noreferrer"); } catch {}
+      });
+      loginCopyUrl.addEventListener("click", () => _copyText(loginUrl && loginUrl.value ? String(loginUrl.value).trim() : ""));
+      loginCopyCode.addEventListener("click", () => _copyText(loginCode && loginCode.value ? String(loginCode.value).trim() : ""));
+      if (loginSelect) {
+        loginSelect.addEventListener("change", () => {
+          const v = (loginSelect.value || "").trim();
+          if (!v) return;
+          stopLoginPolling();
+          loginLabel = v;
+          if (loginInput) loginInput.value = v;
+          if (loginTarget) loginTarget.textContent = _loginTargetText(v);
+          if (loginMsg) loginMsg.textContent = "";
+          if (loginErr) loginErr.textContent = "";
+          if (loginUrl) loginUrl.value = "";
+          if (loginCode) loginCode.value = "";
+          if (loginOutput) loginOutput.textContent = "";
+          _loadLoginStatusOnce().then((body) => _renderLoginStatus(body || {})).catch((e) => {
+            if (loginErr) loginErr.textContent = String(e && e.message ? e.message : e);
+          });
+        });
+      }
+      if (loginApply) {
+        loginApply.addEventListener("click", () => {
+          const raw = (loginInput && loginInput.value) ? String(loginInput.value) : "";
+          const lbl = _labelFromInput(raw);
+          if (!lbl) return;
+          stopLoginPolling();
+          loginLabel = lbl;
+          renderLoginSelect(loginLabel);
+          if (loginSelect) {
+            try { loginSelect.value = loginLabel; } catch {}
+          }
+          if (loginTarget) loginTarget.textContent = _loginTargetText(loginLabel);
+          if (loginMsg) loginMsg.textContent = "";
+          if (loginErr) loginErr.textContent = "";
+          if (loginUrl) loginUrl.value = "";
+          if (loginCode) loginCode.value = "";
+          if (loginOutput) loginOutput.textContent = "";
+          if (loginStart) loginStart.disabled = false;
+          if (loginStop) loginStop.disabled = true;
+          _loadLoginStatusOnce().then((body) => _renderLoginStatus(body || {})).catch((e) => {
+            if (loginErr) loginErr.textContent = String(e && e.message ? e.message : e);
+          });
+        });
+      }
+      if (loginInput) {
+        loginInput.addEventListener("keydown", (ev) => {
+          if (ev.key !== "Enter") return;
+          ev.preventDefault();
+          if (loginApply) loginApply.click();
+        });
+      }
+      loginModal.addEventListener("click", (ev) => {
+        if (ev.target === loginModal) setLoginModalOpen(false);
       });
       noteClose.addEventListener("click", () => setNoteModalOpen(false));
       noteCancel.addEventListener("click", () => setNoteModalOpen(false));
@@ -1664,6 +2092,7 @@ UI_HTML = """<!doctype html>
         if (addModal.classList.contains("open")) setModalOpen(false);
         if (keysModal.classList.contains("open")) setKeysModalOpen(false);
         if (fwModal.classList.contains("open")) setFwModalOpen(false);
+        if (loginModal.classList.contains("open")) setLoginModalOpen(false);
         if (noteModal.classList.contains("open")) setNoteModalOpen(false);
         if (removeModal.classList.contains("open")) setRemoveModalOpen(false);
       });
@@ -1683,14 +2112,15 @@ UI_HTML = """<!doctype html>
         const btn = t && t.closest ? t.closest("button[data-action][data-label]") : null;
         if (!btn) return;
         if (refreshing) {
-          statusEl.textContent = "Refreshing… please wait";
+          statusEl.textContent = "更新中…お待ちください";
           return;
         }
         const action = btn.getAttribute("data-action") || "update";
         const labelEnc = btn.getAttribute("data-label");
         const label = labelEnc ? decodeURIComponent(labelEnc) : "";
         if (!label) return;
-        if (action === "note") openNote(label);
+        if (action === "login") openLogin(label);
+        else if (action === "note") openNote(label);
         else if (action === "remove") openRemove(label);
         else updateNow(label);
       });
@@ -1905,6 +2335,16 @@ class AddFireworksKeysPayload(BaseModel):
     fireworks_base_url: str | None = None
 
 
+class AddGoogleKeysPayload(BaseModel):
+    text: str | None = None
+    keys: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    note: str | None = None
+    label_prefix: str | None = None
+    expected_email: str | None = None
+    google_base_url: str | None = None
+
+
 class AppendNotePayload(BaseModel):
     account_label: str
     append: str
@@ -1931,6 +2371,15 @@ class PatchAccountPayload(BaseModel):
     enabled: bool | None = None
     provider: str | None = None
     note: str | None = None
+
+
+class CodexLoginStartPayload(BaseModel):
+    label: str
+    force: bool = False
+
+
+class CodexLoginCancelPayload(BaseModel):
+    label: str
 
 
 class StopAppPayload(BaseModel):
@@ -2130,6 +2579,99 @@ def refresh_async(label: str | None = None, include_disabled: bool = False):
     return {"ok": True, "queued": True, "label": label, "started_at": started_at}
 
 
+@app.post("/codex/login/start")
+def codex_login_start(payload: CodexLoginStartPayload):
+    if not REFRESHER_BASE_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    label = (payload.label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label is required")
+
+    url = f"{REFRESHER_BASE_URL}/codex/login/start"
+    data = json.dumps(
+        {"label": label, "force": bool(payload.force)},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    try:
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {"ok": True}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except Exception:
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) else body
+        raise HTTPException(status_code=e.code, detail=detail)
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.get("/codex/login/status")
+def codex_login_status(label: str):
+    if not REFRESHER_BASE_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    lbl = (label or "").strip()
+    if not lbl:
+        raise HTTPException(status_code=400, detail="label is required")
+
+    q = urllib.parse.urlencode({"label": lbl})
+    url = f"{REFRESHER_BASE_URL}/codex/login/status?{q}"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {"ok": True}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except Exception:
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) else body
+        raise HTTPException(status_code=e.code, detail=detail)
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.post("/codex/login/cancel")
+def codex_login_cancel(payload: CodexLoginCancelPayload):
+    if not REFRESHER_BASE_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    label = (payload.label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label is required")
+
+    url = f"{REFRESHER_BASE_URL}/codex/login/cancel"
+    data = json.dumps({"label": label}, ensure_ascii=False).encode("utf-8")
+    try:
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {"ok": True}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except Exception:
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) else body
+        raise HTTPException(status_code=e.code, detail=detail)
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
 @app.post("/accounts/add")
 def accounts_add(payload: AddAccountsPayload):
     if not REFRESHER_BASE_URL:
@@ -2192,6 +2734,34 @@ def fireworks_add_keys(payload: AddFireworksKeysPayload):
         raise HTTPException(status_code=501, detail="refresher is disabled")
 
     url = f"{REFRESHER_BASE_URL}/config/add_fireworks_keys"
+    data = json.dumps(payload.model_dump(), ensure_ascii=False).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {"ok": True}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except Exception:
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) else body
+        raise HTTPException(status_code=e.code, detail=detail)
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"refresher unreachable: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.post("/google/add_keys")
+def google_add_keys(payload: AddGoogleKeysPayload):
+    if not REFRESHER_BASE_URL:
+        raise HTTPException(status_code=501, detail="refresher is disabled")
+
+    url = f"{REFRESHER_BASE_URL}/config/add_google_keys"
     data = json.dumps(payload.model_dump(), ensure_ascii=False).encode("utf-8")
     try:
         req = urllib.request.Request(

@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,13 +38,20 @@ ANTHROPIC_MODEL_DEFAULT = os.getenv("ANTHROPIC_MODEL_DEFAULT", "claude-3-5-haiku
 FIREWORKS_BASE_URL_DEFAULT = os.getenv(
     "FIREWORKS_BASE_URL_DEFAULT", "https://api.fireworks.ai/inference/v1"
 ).rstrip("/")
+GOOGLE_BASE_URL_DEFAULT = os.getenv(
+    "GOOGLE_BASE_URL_DEFAULT", "https://generativelanguage.googleapis.com"
+).rstrip("/")
 
 _JWT_RE = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 _EMAIL_FIND_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _ANTHROPIC_KEY_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
 _FIREWORKS_KEY_LINE_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
+_GOOGLE_API_KEY_LINE_RE = re.compile(r"^AIza[0-9A-Za-z_-]{20,}$")
 _FIRECTL_BALANCE_RE = re.compile(r"(?im)^Balance:\s*([A-Z]{3})\s*([0-9]+(?:\.[0-9]+)?)\b")
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_CODEX_DEVICE_CODE_RE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b")
+_URL_RE = re.compile(r"https?://[^\s]+")
 
 app = FastAPI(title="Codex Status Refresher")
 
@@ -56,6 +63,84 @@ _fireworks_balance_cache_lock = threading.Lock()
 _fireworks_balance_cache: dict[str, dict[str, Any]] = {}
 
 REFRESH_JOIN_TIMEOUT_SEC = float(os.getenv("REFRESH_JOIN_TIMEOUT_SEC", "300"))
+
+_codex_login_lock = threading.Lock()
+_codex_login_sessions: dict[str, "CodexLoginSession"] = {}
+
+
+@dataclass
+class CodexLoginSession:
+    label: str
+    started_at: str
+    account_home: Path
+    auth_path: Path
+    process: subprocess.Popen[str]
+    thread: threading.Thread | None = None
+    state: str = "running"  # running | done | error | canceled
+    device_url: str | None = None
+    user_code: str | None = None
+    output_lines: list[str] = field(default_factory=list)
+    exit_code: int | None = None
+    error: str | None = None
+    completed_at: str | None = None
+    cond: threading.Condition = field(default_factory=threading.Condition)
+
+
+def _strip_ansi(text: str) -> str:
+    if not text:
+        return ""
+    return _ANSI_ESCAPE_RE.sub("", text).replace("\r", "")
+
+
+def _safe_account_home(label: str) -> Path:
+    lbl = (label or "").strip()
+    if not lbl:
+        raise HTTPException(status_code=400, detail="label is required")
+    if "/" in lbl or "\\" in lbl:
+        raise HTTPException(status_code=400, detail="invalid label (path separators are not allowed)")
+    # Prevent traversal and oddities; labels are directory names under ACCOUNTS_DIR.
+    if lbl in (".", "..") or ".." in lbl:
+        raise HTTPException(status_code=400, detail="invalid label")
+
+    base = Path(ACCOUNTS_DIR).resolve()
+    home = (Path(ACCOUNTS_DIR) / lbl).resolve()
+    if home != base and base not in home.parents:
+        raise HTTPException(status_code=400, detail="invalid label (outside accounts dir)")
+    return home
+
+
+def _codex_login_status_payload(label: str, session: CodexLoginSession | None) -> dict[str, Any]:
+    account_home = _safe_account_home(label)
+    auth_path = account_home / ".codex" / "auth.json"
+    account_email = _extract_account_email_from_auth(auth_path) if auth_path.is_file() else None
+    out: dict[str, Any] = {
+        "ok": True,
+        "label": label,
+        "auth_path": str(auth_path),
+        "auth_exists": auth_path.is_file(),
+        "account_email": account_email,
+        "state": "idle",
+        "started_at": None,
+        "completed_at": None,
+        "device_url": None,
+        "user_code": None,
+        "exit_code": None,
+        "error": None,
+        "output_tail": [],
+    }
+    if not session:
+        return out
+
+    with session.cond:
+        out["state"] = session.state
+        out["started_at"] = session.started_at
+        out["completed_at"] = session.completed_at
+        out["device_url"] = session.device_url
+        out["user_code"] = session.user_code
+        out["exit_code"] = session.exit_code
+        out["error"] = session.error
+        out["output_tail"] = session.output_lines[-80:]
+    return out
 
 
 def _fail_if_refresh_running() -> None:
@@ -541,6 +626,63 @@ def _normalize_fireworks(
     return normalized
 
 
+def _google_models_url(base_url: str | None) -> str:
+    base = (base_url or GOOGLE_BASE_URL_DEFAULT).strip().rstrip("/")
+    if not base:
+        base = GOOGLE_BASE_URL_DEFAULT
+    return f"{base}/v1beta/models"
+
+
+def _google_request_status(api_key: str, base_url: str | None) -> tuple[int, dict[str, str], str | None]:
+    url = _google_models_url(base_url)
+    req = urllib.request.Request(
+        url,
+        headers={
+            "accept": "application/json",
+            "x-goog-api-key": api_key,
+            "user-agent": f"{CLIENT_NAME}/{CLIENT_VERSION}",
+        },
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
+            _ = resp.read(4096)
+            return int(getattr(resp, "status", 200)), _headers_to_dict(resp.headers), None
+    except urllib.error.HTTPError as e:
+        body = e.read(4096).decode("utf-8", errors="replace")
+        return int(getattr(e, "code", 0) or 0), _headers_to_dict(e.headers), body
+
+
+def _normalize_google(
+    http_status: int,
+    headers: dict[str, str],
+    expected: AccountConfig,
+    err_msg: str | None,
+) -> dict[str, Any]:
+    normalized: dict[str, Any] = {"provider": "google"}
+
+    if expected.expected_email:
+        normalized["expected_email"] = expected.expected_email
+        normalized["expected_email_match"] = None
+
+    if expected.expected_plan_type:
+        normalized["expected_planType"] = expected.expected_plan_type
+        normalized["expected_planType_match"] = None
+
+    if http_status in (401, 403):
+        normalized["requiresAuth"] = True
+    if err_msg:
+        ml = err_msg.lower()
+        if "api key not valid" in ml or "provide a valid api key" in ml or "missing a valid api key" in ml:
+            normalized["requiresAuth"] = True
+
+    # Gemini API (Google AI for Developers) does not expose remaining quota via headers in most cases.
+    # Keep windows empty and rely on the UI/console for quota details.
+    normalized["windows"] = {}
+    return normalized
+
+
 @dataclass(frozen=True)
 class AccountConfig:
     label: str
@@ -551,6 +693,7 @@ class AccountConfig:
     anthropic_model: str | None = None
     fireworks_model: str | None = None
     fireworks_base_url: str | None = None
+    google_base_url: str | None = None
 
 
 def _is_codex_provider(provider: str) -> bool:
@@ -566,6 +709,11 @@ def _is_anthropic_provider(provider: str) -> bool:
 def _is_fireworks_provider(provider: str) -> bool:
     p = (provider or "").strip().lower()
     return p in ("fireworks", "fireworks_ai", "fireworks_api")
+
+
+def _is_google_provider(provider: str) -> bool:
+    p = (provider or "").strip().lower()
+    return p in ("google", "google_ai", "google_api", "google_gemini", "gemini", "gemini_api")
 
 
 def _load_accounts(only_label: str | None, include_disabled: bool) -> list[AccountConfig]:
@@ -594,6 +742,7 @@ def _load_accounts(only_label: str | None, include_disabled: bool) -> list[Accou
         anthropic_model = None
         fireworks_model = None
         fireworks_base_url = None
+        google_base_url = None
         if _is_anthropic_provider(provider):
             anthropic_model = (acc.get("anthropic_model") or acc.get("model") or "").strip() or None
         if _is_fireworks_provider(provider):
@@ -603,6 +752,10 @@ def _load_accounts(only_label: str | None, include_disabled: bool) -> list[Accou
             )
             if fireworks_base_url:
                 fireworks_base_url = fireworks_base_url.rstrip("/")
+        if _is_google_provider(provider):
+            google_base_url = (acc.get("google_base_url") or acc.get("base_url") or "").strip() or None
+            if google_base_url:
+                google_base_url = google_base_url.rstrip("/")
         out.append(
             AccountConfig(
                 label=label,
@@ -613,6 +766,7 @@ def _load_accounts(only_label: str | None, include_disabled: bool) -> list[Accou
                 anthropic_model=anthropic_model,
                 fireworks_model=fireworks_model,
                 fireworks_base_url=fireworks_base_url,
+                google_base_url=google_base_url,
             )
         )
 
@@ -663,6 +817,26 @@ def _extract_fireworks_keys(text: str) -> list[str]:
         if not s or s.startswith("#"):
             continue
         if not _FIREWORKS_KEY_LINE_RE.match(s):
+            continue
+        if s in seen:
+            continue
+        out.append(s)
+        seen.add(s)
+    return out
+
+
+def _extract_google_api_keys(text: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in (text or "").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        # Strip common bullets.
+        s = re.sub(r"^\s*[-*•・]+\s*", "", raw).strip()
+        if not s:
+            continue
+        if not _GOOGLE_API_KEY_LINE_RE.match(s):
             continue
         if s in seen:
             continue
@@ -755,6 +929,15 @@ def _make_label_from_fireworks_key(key: str, prefix: str | None = None) -> str:
     return f"{safe_prefix}_{safe_tail}"
 
 
+def _make_label_from_google_key(key: str, prefix: str | None = None) -> str:
+    safe_prefix = re.sub(r"[^a-z0-9]+", "_", (prefix or "google").strip().lower()).strip("_")
+    if not safe_prefix:
+        safe_prefix = "google"
+    tail = key.strip().lower()[-10:]
+    safe_tail = re.sub(r"[^a-z0-9]+", "", tail).strip("_") or "key"
+    return f"{safe_prefix}_{safe_tail}"
+
+
 def _make_label_from_fireworks_email(email: str, prefix: str | None = None) -> str:
     safe_prefix = re.sub(
         r"[^a-z0-9]+", "_", (prefix or "fireworks").strip().lower()
@@ -802,6 +985,16 @@ class AddFireworksKeysPayload(BaseModel):
     expected_email: str | None = None
     fireworks_model: str | None = None
     fireworks_base_url: str | None = None
+
+
+class AddGoogleKeysPayload(BaseModel):
+    text: str | None = None
+    keys: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    note: str | None = None
+    label_prefix: str | None = None
+    expected_email: str | None = None
+    google_base_url: str | None = None
 
 
 class AppendNotePayload(BaseModel):
@@ -1509,6 +1702,148 @@ def config_add_fireworks_keys(payload: AddFireworksKeysPayload):
     return {"ok": True, "added": added, "updated": updated, "labels": sorted(set(labels))}
 
 
+@app.post("/config/add_google_keys")
+def config_add_google_keys(payload: AddGoogleKeysPayload):
+    config_path = Path(CONFIG_PATH)
+    if not config_path.exists() or not config_path.is_file():
+        raise HTTPException(status_code=500, detail=f"config not found: {CONFIG_PATH}")
+
+    keys: list[str] = []
+    if payload.text:
+        keys.extend(_extract_google_api_keys(payload.text))
+    for k in payload.keys or []:
+        if isinstance(k, str) and k.strip():
+            keys.extend(_extract_google_api_keys(k))
+
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for k in keys:
+        k = k.strip()
+        if not k or k in seen:
+            continue
+        uniq.append(k)
+        seen.add(k)
+
+    if not uniq:
+        raise HTTPException(status_code=400, detail="no google api keys found")
+
+    label_prefix = (payload.label_prefix or "").strip() or None
+    note = (payload.note or "").strip() or None
+    base_url = (payload.google_base_url or "").strip() or None
+    if base_url:
+        base_url = base_url.rstrip("/")
+
+    default_email: str | None = None
+    if payload.expected_email:
+        emails = _extract_emails(payload.expected_email)
+        default_email = emails[0] if emails else None
+
+    with _config_lock:
+        _fail_if_refresh_running()
+
+        cfg = _read_json(config_path)
+        accounts = cfg.get("accounts")
+        if not isinstance(accounts, list):
+            accounts = []
+            cfg["accounts"] = accounts
+
+        existing_labels: set[str] = set()
+        existing_by_label: dict[str, dict[str, Any]] = {}
+        existing_by_key: dict[str, str] = {}
+        for a in accounts:
+            if not isinstance(a, dict):
+                continue
+            label = (a.get("label") or "").strip()
+            if not label:
+                continue
+            existing_labels.add(label)
+            existing_by_label[label] = a
+
+            provider = (a.get("provider") or "").strip().lower()
+            if provider not in ("google", "google_ai", "google_api", "google_gemini", "gemini", "gemini_api"):
+                continue
+
+            key_path = Path(ACCOUNTS_DIR) / label / ".secrets" / "google_api_key.txt"
+            if not key_path.is_file():
+                continue
+            key_text = _read_text_file(key_path)
+            if not key_text:
+                continue
+            candidate: str | None = None
+            for line in key_text.splitlines():
+                s = line.strip()
+                if s:
+                    candidate = s
+                    break
+            if candidate and _GOOGLE_API_KEY_LINE_RE.match(candidate):
+                existing_by_key[candidate] = label
+
+        added = 0
+        updated = 0
+        labels: list[str] = []
+        for key in uniq:
+            existing_label_by_key = existing_by_key.get(key)
+            if existing_label_by_key:
+                label = existing_label_by_key
+            else:
+                base = _make_label_from_google_key(key, prefix=label_prefix)
+                label = base if base in existing_by_label else _make_unique_label(base, existing_labels)
+                existing_labels.add(label)
+            labels.append(label)
+
+            entry = existing_by_label.get(label)
+            if entry is None:
+                entry = {
+                    "label": label,
+                    "provider": "google",
+                    "enabled": bool(payload.enabled),
+                }
+                if default_email:
+                    entry["expected_email"] = default_email
+                if note:
+                    entry["note"] = note
+                if base_url:
+                    entry["google_base_url"] = base_url
+                accounts.append(entry)
+                existing_by_label[label] = entry
+                added += 1
+            else:
+                changed = False
+                if (entry.get("provider") or "").strip().lower() != "google":
+                    entry["provider"] = "google"
+                    changed = True
+                if bool(entry.get("enabled", True)) != bool(payload.enabled):
+                    entry["enabled"] = bool(payload.enabled)
+                    changed = True
+                if default_email and (entry.get("expected_email") or "").strip().lower() != default_email:
+                    entry["expected_email"] = default_email
+                    changed = True
+                if note and (entry.get("note") or "").strip() != note:
+                    entry["note"] = note
+                    changed = True
+                if base_url and (entry.get("google_base_url") or entry.get("base_url") or "").strip().rstrip("/") != base_url:
+                    entry["google_base_url"] = base_url
+                    changed = True
+                if changed:
+                    updated += 1
+
+            account_home = Path(ACCOUNTS_DIR) / label
+            (account_home / ".codex").mkdir(parents=True, exist_ok=True)
+            secrets_dir = account_home / ".secrets"
+            secrets_dir.mkdir(parents=True, exist_ok=True)
+            key_path = secrets_dir / "google_api_key.txt"
+            _write_text_atomic(key_path, key.strip() + "\n")
+
+        _write_json_atomic(config_path, cfg)
+
+        try:
+            _push_registry_from_config()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"failed to push registry: {e}") from e
+
+    return {"ok": True, "added": added, "updated": updated, "labels": sorted(set(labels))}
+
+
 @app.post("/config/push_registry")
 def config_push_registry():
     try:
@@ -1963,6 +2298,121 @@ def _refresh_one_fireworks(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
     return state, payload
 
 
+def _refresh_one_google(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
+    account_home = Path(ACCOUNTS_DIR) / acc.label
+    account_home.mkdir(parents=True, exist_ok=True)
+    (account_home / ".codex").mkdir(parents=True, exist_ok=True)
+    secrets_dir = account_home / ".secrets"
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = _now_iso()
+
+    key_path = secrets_dir / "google_api_key.txt"
+    key_text = _read_text_file(key_path) if key_path.is_file() else None
+    api_key: str | None = None
+    if key_text:
+        for line in key_text.splitlines():
+            s = line.strip()
+            if s:
+                api_key = s
+                break
+
+    base_url = (acc.google_base_url or GOOGLE_BASE_URL_DEFAULT).rstrip("/")
+
+    if not api_key or not _GOOGLE_API_KEY_LINE_RE.match(api_key):
+        raw = "[auth_required] missing google_api_key.txt"
+        parsed = {
+            "probe_error": True,
+            "error_type": "AuthRequired",
+            "error": f"missing API key: {key_path}",
+            "normalized": {
+                "provider": "google",
+                "requiresAuth": True,
+                "expected_email": acc.expected_email,
+                "expected_email_match": None,
+                "expected_planType": acc.expected_plan_type,
+                "expected_planType_match": None,
+                "windows": {},
+                "base_url": base_url,
+            },
+        }
+        payload = _post_status_event(acc.label, raw, parsed, ts)
+        return "auth required", payload
+
+    try:
+        http_status, headers, err_body = _google_request_status(api_key, base_url=base_url)
+        err_msg = _extract_error_message(err_body or "") or ((err_body or "").strip() or None)
+        if err_msg and len(err_msg) > 600:
+            err_msg = err_msg[:600] + "…"
+
+        headers_filtered = {
+            k: v
+            for (k, v) in headers.items()
+            if k.startswith("x-") or k in ("retry-after", "date", "request-id")
+        }
+
+        normalized = _normalize_google(
+            http_status=http_status,
+            headers=headers,
+            expected=acc,
+            err_msg=err_msg,
+        )
+        normalized["api_key_hint"] = _mask_secret(api_key, keep_start=8, keep_end=6)
+        if base_url:
+            normalized["base_url"] = base_url
+        if err_msg:
+            normalized["error_message"] = err_msg
+
+        raw = json.dumps(
+            {
+                "http_status": http_status,
+                "base_url": base_url,
+                "headers": headers_filtered,
+                "error": err_msg,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        parsed: dict[str, Any] = {
+            "http_status": http_status,
+            "base_url": base_url,
+            "headers": headers_filtered,
+            "normalized": normalized,
+        }
+
+        if normalized.get("requiresAuth"):
+            state = "auth required"
+        elif http_status >= 400:
+            parsed["probe_error"] = True
+            parsed["error_type"] = "HTTPStatus"
+            parsed["error"] = err_msg or f"HTTP {http_status}"
+            state = "error"
+        else:
+            state = "ok"
+    except Exception as e:
+        raw = f"[probe_error] {type(e).__name__}: {e}"
+        parsed = {
+            "probe_error": True,
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "normalized": {
+                "provider": "google",
+                "requiresAuth": False,
+                "expected_email": acc.expected_email,
+                "expected_email_match": None,
+                "expected_planType": acc.expected_plan_type,
+                "expected_planType_match": None,
+                "windows": {},
+                "base_url": base_url,
+                "api_key_hint": _mask_secret(api_key, keep_start=8, keep_end=6),
+            },
+        }
+        state = "error"
+
+    payload = _post_status_event(acc.label, raw, parsed, ts)
+    return state, payload
+
+
 def _refresh_one(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
     if _is_codex_provider(acc.provider):
         return _refresh_one_codex(acc)
@@ -1970,6 +2420,8 @@ def _refresh_one(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
         return _refresh_one_anthropic(acc)
     if _is_fireworks_provider(acc.provider):
         return _refresh_one_fireworks(acc)
+    if _is_google_provider(acc.provider):
+        return _refresh_one_google(acc)
 
     ts = _now_iso()
     raw = f"[probe_error] unknown provider: {acc.provider}"
@@ -1989,6 +2441,189 @@ def _refresh_one(acc: AccountConfig) -> tuple[str, dict[str, Any]]:
     }
     payload = _post_status_event(acc.label, raw, parsed, ts)
     return "error", payload
+
+
+class CodexLoginStartPayload(BaseModel):
+    label: str
+    force: bool = False
+    wait_for_code_sec: float = 3.0
+
+
+class CodexLoginCancelPayload(BaseModel):
+    label: str
+
+
+def _cancel_codex_login_session(session: CodexLoginSession) -> None:
+    proc = session.process
+    try:
+        with session.cond:
+            session.state = "canceled"
+            session.error = "canceled"
+            session.completed_at = _now_iso()
+            session.cond.notify_all()
+        proc.terminate()
+        proc.wait(timeout=2)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _run_codex_login_session(session: CodexLoginSession) -> None:
+    proc = session.process
+    try:
+        out = proc.stdout
+        if out is None:
+            raise RuntimeError("codex login stdout is not available")
+
+        for raw in out:
+            line = _strip_ansi(raw).rstrip("\n")
+            if not line:
+                continue
+            with session.cond:
+                session.output_lines.append(line)
+                if len(session.output_lines) > 400:
+                    session.output_lines[:] = session.output_lines[-200:]
+
+                if session.device_url is None:
+                    m = _URL_RE.search(line)
+                    if m:
+                        session.device_url = m.group(0).strip()
+
+                if session.user_code is None:
+                    m = _CODEX_DEVICE_CODE_RE.search(line)
+                    if m:
+                        session.user_code = m.group(0).strip()
+
+                session.cond.notify_all()
+
+        rc = proc.wait()
+        with session.cond:
+            session.exit_code = rc
+            if session.state != "canceled":
+                if rc == 0:
+                    session.state = "done"
+                else:
+                    session.state = "error"
+                    session.error = f"codex login exited with status {rc}"
+            session.completed_at = _now_iso()
+            session.cond.notify_all()
+    except Exception as e:
+        with session.cond:
+            session.state = "error"
+            session.error = f"{type(e).__name__}: {e}"
+            session.completed_at = _now_iso()
+            session.cond.notify_all()
+
+
+@app.post("/codex/login/start")
+def codex_login_start(payload: CodexLoginStartPayload):
+    label = (payload.label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label is required")
+
+    account_home = _safe_account_home(label)
+    account_home.mkdir(parents=True, exist_ok=True)
+    (account_home / ".codex").mkdir(parents=True, exist_ok=True)
+    (account_home / ".secrets").mkdir(parents=True, exist_ok=True)
+    auth_path = account_home / ".codex" / "auth.json"
+
+    # Ensure wait_for_code_sec is sane; this only blocks the HTTP response briefly.
+    wait_for_code_sec = float(payload.wait_for_code_sec or 0.0)
+    if wait_for_code_sec < 0.0:
+        wait_for_code_sec = 0.0
+    if wait_for_code_sec > 15.0:
+        wait_for_code_sec = 15.0
+
+    with _codex_login_lock:
+        existing = _codex_login_sessions.get(label)
+        if existing:
+            running = existing.process.poll() is None and existing.state == "running"
+            if running and not payload.force:
+                return _codex_login_status_payload(label, existing)
+            if running and payload.force:
+                _cancel_codex_login_session(existing)
+            _codex_login_sessions.pop(label, None)
+
+        env = os.environ.copy()
+        env["HOME"] = str(account_home)
+        env.setdefault("TERM", "dumb")
+
+        try:
+            proc = subprocess.Popen(
+                [CODEX_BIN, "login", "--device-auth"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+            )
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=500, detail=f"codex binary not found: {CODEX_BIN}") from e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"failed to start codex login: {e}") from e
+
+        session = CodexLoginSession(
+            label=label,
+            started_at=_now_iso(),
+            account_home=account_home,
+            auth_path=auth_path,
+            process=proc,
+        )
+        t = threading.Thread(
+            target=_run_codex_login_session,
+            args=(session,),
+            name=f"codex_login:{label}",
+            daemon=True,
+        )
+        session.thread = t
+        _codex_login_sessions[label] = session
+        t.start()
+
+    if wait_for_code_sec > 0:
+        deadline = time.time() + wait_for_code_sec
+        with session.cond:
+            while time.time() < deadline:
+                if session.user_code and session.device_url:
+                    break
+                if session.exit_code is not None:
+                    break
+                session.cond.wait(timeout=0.1)
+
+    return _codex_login_status_payload(label, session)
+
+
+@app.get("/codex/login/status")
+def codex_login_status(label: str):
+    lbl = (label or "").strip()
+    if not lbl:
+        raise HTTPException(status_code=400, detail="label is required")
+    with _codex_login_lock:
+        session = _codex_login_sessions.get(lbl)
+        # Drop finished sessions on demand if they no longer exist on disk and are older.
+        if session and session.process.poll() is not None and session.state in ("done", "error", "canceled"):
+            with session.cond:
+                completed_at = session.completed_at
+            if completed_at and (time.time() - datetime.fromisoformat(completed_at).timestamp() > 3600):
+                _codex_login_sessions.pop(lbl, None)
+                session = None
+    return _codex_login_status_payload(lbl, session)
+
+
+@app.post("/codex/login/cancel")
+def codex_login_cancel(payload: CodexLoginCancelPayload):
+    label = (payload.label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label is required")
+    with _codex_login_lock:
+        session = _codex_login_sessions.get(label)
+    if not session:
+        return {"ok": True, "label": label, "canceled": False, "detail": "no inflight login"}
+
+    _cancel_codex_login_session(session)
+    return _codex_login_status_payload(label, session)
 
 
 @app.get("/healthz")
