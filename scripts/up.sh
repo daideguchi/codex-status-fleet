@@ -13,6 +13,37 @@ python3 scripts/generate_compose.py --config "${config_path}" --out "${out_path}
 export CODEX_CLI_VERSION="$(python3 -c 'import json,sys; cfg=json.load(open(sys.argv[1],"r",encoding="utf-8")); print(str(cfg.get("codex_cli_version","0.77.0")))' "${config_path}")"
 export RPC_TIMEOUT_SEC="$(python3 -c 'import json,sys; cfg=json.load(open(sys.argv[1],"r",encoding="utf-8")); agent=cfg.get("agent") or {}; print(str(agent.get("rpc_timeout_sec",10.0)))' "${config_path}")"
 
+wait_for_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "error: docker not found. Install Docker Desktop (macOS) or Docker Engine, then retry." >&2
+    exit 1
+  fi
+
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    if ! pgrep -x Docker >/dev/null 2>&1; then
+      echo "==> starting Docker Desktop"
+      open -a Docker >/dev/null 2>&1 || true
+    fi
+  fi
+
+  echo "==> waiting for Docker daemon..."
+  for _ in {1..120}; do
+    if docker info >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "error: cannot connect to Docker daemon (DOCKER_HOST=${DOCKER_HOST:-default}). Start Docker and retry." >&2
+  exit 1
+}
+
+wait_for_docker
+
 collector_in_compose="$(python3 -c 'import json,sys; cfg=json.load(open(sys.argv[1],"r",encoding="utf-8")); print("true" if cfg.get("collector_in_compose", True) else "false")' "${config_path}")"
 if [[ "${collector_in_compose}" == "true" ]]; then
   docker compose -f docker-compose.yml -f "${out_path}" up -d --build --remove-orphans

@@ -14,6 +14,7 @@ docker-compose.accounts.yml
 
 # Local config
 accounts.json
+accounts.backup*.json
 
 # Local schema dumps
 tmp_schema/

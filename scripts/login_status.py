@@ -146,6 +146,14 @@ def main() -> int:
                     "api_key_mtime_utc": _fmt_mtime(key_path) if os.path.isfile(key_path) else None,
                 }
             )
+        elif provider in ("google", "google_ai", "google_api", "google_gemini", "gemini", "gemini_api"):
+            key_path = os.path.join(accounts_root, label, ".secrets", "google_api_key.txt")
+            row.update(
+                {
+                    "has_api_key": os.path.isfile(key_path),
+                    "api_key_mtime_utc": _fmt_mtime(key_path) if os.path.isfile(key_path) else None,
+                }
+            )
         else:
             row["note"] = "unknown provider"
 
@@ -206,6 +214,9 @@ def main() -> int:
                 if not it.get("has_api_key"):
                     print(it.get("label") or "")
             elif provider in ("fireworks", "fireworks_ai", "fireworks_api"):
+                if not it.get("has_api_key"):
+                    print(it.get("label") or "")
+            elif provider in ("google", "google_ai", "google_api", "google_gemini", "gemini", "gemini_api"):
                 if not it.get("has_api_key"):
                     print(it.get("label") or "")
         return 0

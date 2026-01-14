@@ -80,16 +80,17 @@ def main() -> int:
     expected_plan = (args.plan or "").strip()
 
     existing_by_label: dict[str, dict[str, Any]] = {}
-    existing_by_email: dict[str, dict[str, Any]] = {}
+    existing_by_email_codex: dict[str, dict[str, Any]] = {}
     for a in accounts:
         if not isinstance(a, dict):
             continue
         label = (a.get("label") or "").strip()
         if label:
             existing_by_label[label] = a
+        provider = (a.get("provider") or "codex").strip().lower()
         exp = (a.get("expected_email") or "").strip().lower()
-        if exp:
-            existing_by_email[exp] = a
+        if exp and provider in ("codex", "openai_codex", "openai"):
+            existing_by_email_codex[exp] = a
 
     accounts_dir = Path(args.accounts_dir).resolve() if args.accounts_dir else Path("accounts").resolve()
 
@@ -99,14 +100,16 @@ def main() -> int:
         email_lc = email.strip().lower()
         label = _make_label_from_email(email_lc)
 
-        entry = existing_by_email.get(email_lc) or existing_by_label.get(label)
+        # Only merge-by-email within Codex accounts. The same email may legitimately exist
+        # for other providers (e.g., Fireworks API key) and should not block adding Codex.
+        entry = existing_by_label.get(label) or existing_by_email_codex.get(email_lc)
         if entry is None:
             entry = {"label": label, "provider": "codex", "enabled": True, "expected_email": email_lc}
             if expected_plan:
                 entry["expected_planType"] = expected_plan
             accounts.append(entry)
             existing_by_label[label] = entry
-            existing_by_email[email_lc] = entry
+            existing_by_email_codex[email_lc] = entry
             added += 1
         else:
             changed = False
