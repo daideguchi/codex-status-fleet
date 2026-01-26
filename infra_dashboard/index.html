@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Infra Dashboard</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+        margin: 0;
+        padding: 14px 14px 28px;
+        background: Canvas;
+        color: CanvasText;
+      }
+      header { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+      h1 { font-size: 18px; margin: 0; }
+      .meta { font-size: 12px; opacity: 0.85; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid #8884; background: #8881; }
+      .pill.ok { border-color: #0a74; color: #0a7; }
+      .pill.bad { border-color: #d554; color: #d55; }
+      .grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+      @media (min-width: 720px) { .grid { grid-template-columns: 1fr 1fr; } }
+      .card {
+        border: 1px solid #8884;
+        border-radius: 14px;
+        padding: 12px;
+        background: Canvas;
+      }
+      .card h2 { font-size: 14px; margin: 0 0 8px; }
+      .rows { display: flex; flex-direction: column; gap: 10px; }
+      .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+      .name { font-weight: 700; font-size: 13px; }
+      .sub { font-size: 12px; opacity: 0.8; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-variant-numeric: tabular-nums; }
+      .bar {
+        height: 10px;
+        border-radius: 999px;
+        background: #8882;
+        border: 1px solid #8883;
+        overflow: hidden;
+      }
+      .fill { height: 100%; width: 0%; background: #0a7; }
+      .fill.warn { background: #d9a200; }
+      .fill.bad { background: #d55; }
+      .kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; font-size: 12px; }
+      .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+      button {
+        appearance: none;
+        border: 1px solid #8884;
+        background: #8881;
+        padding: 8px 12px;
+        border-radius: 10px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      button:active { transform: translateY(1px); }
+      .muted { opacity: 0.8; }
+      .err { color: #d55; }
+      .ok { color: #0a7; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Infra Dashboard</h1>
+      <div class="meta">
+        <span id="stalePill" class="pill">Loading…</span>
+        <span class="pill mono" id="tsText">—</span>
+        <span class="pill mono" id="hostText">—</span>
+      </div>
+      <div class="btns">
+        <button id="refreshBtn">Refresh</button>
+        <button id="openJsonBtn">Open JSON</button>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>Storage</h2>
+        <div id="storageRows" class="rows"></div>
+      </section>
+
+      <section class="card">
+        <h2>Network</h2>
+        <div class="kv">
+          <div>Default IF</div><div class="mono" id="ifText">—</div>
+          <div>RX</div><div class="mono" id="rxText">—</div>
+          <div>TX</div><div class="mono" id="txText">—</div>
+        </div>
+        <div style="height: 10px"></div>
+        <div id="pingRows" class="rows"></div>
+        <div style="height: 10px"></div>
+        <div class="sub" id="wifiText"></div>
+      </section>
+
+      <section class="card">
+        <h2>Lenovo (remote)</h2>
+        <div id="lenovoRows" class="rows"></div>
+        <div class="sub muted" id="lenovoNote"></div>
+      </section>
+
+      <section class="card">
+        <h2>Errors</h2>
+        <div id="errBox" class="sub muted">—</div>
+      </section>
+    </main>
+
+    <script>
+      const DATA_URL = "../_reports/infra_dashboard.json";
+
+      function fmtBytes(bytes) {
+        if (bytes == null || isNaN(bytes)) return "—";
+        const units = ["B","KiB","MiB","GiB","TiB"];
+        let v = bytes;
+        let i = 0;
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+        return `${v.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+      }
+
+      function fmtRate(bps) {
+        if (bps == null || isNaN(bps)) return "—";
+        const mbps = (bps * 8) / 1_000_000;
+        if (mbps >= 10) return `${mbps.toFixed(1)} Mbps`;
+        return `${mbps.toFixed(2)} Mbps`;
+      }
+
+      function pctClass(pct) {
+        if (pct == null || isNaN(pct)) return "";
+        if (pct >= 92) return "bad";
+        if (pct >= 85) return "warn";
+        return "ok";
+      }
+
+      function makeStorageRow(s) {
+        const usedPct = s.used_pct ?? null;
+        const cls = pctClass(usedPct);
+        const pctText = usedPct == null ? "—" : `${usedPct.toFixed(1)}%`;
+        const freeText = fmtBytes(s.free_bytes);
+        const totalText = fmtBytes(s.total_bytes);
+        const mount = s.mountpoint ? ` · ${s.mountpoint}` : "";
+        const note = s.error ? ` · ${s.error}` : "";
+        return `
+          <div>
+            <div class="row">
+              <div>
+                <div class="name">${s.name}</div>
+                <div class="sub mono">${s.path}${mount}${note}</div>
+              </div>
+              <div class="mono">${pctText}</div>
+            </div>
+            <div class="bar" style="margin-top:6px">
+              <div class="fill ${cls}" style="width:${Math.max(0, Math.min(100, usedPct ?? 0))}%"></div>
+            </div>
+            <div class="sub mono" style="margin-top:6px">${freeText} free / ${totalText} total</div>
+          </div>
+        `;
+      }
+
+      function makePingRow(name, p) {
+        const ok = !!p.ok;
+        const ms = p.latency_ms != null ? `${p.latency_ms.toFixed(0)} ms` : "—";
+        const via = p.via ? ` via ${p.via}` : "";
+        const ip = p.ip ? ` (${p.ip})` : "";
+        const pillCls = ok ? "ok" : "bad";
+        const label = ok ? "OK" : "NG";
+        return `
+          <div class="row">
+            <div>
+              <div class="name">${name}</div>
+              <div class="sub mono">${ms}${via}${ip}</div>
+            </div>
+            <span class="pill ${pillCls} mono">${label}</span>
+          </div>
+        `;
+      }
+
+      function makeDriveRow(d) {
+        const usedPct = d.used_pct ?? null;
+        const cls = pctClass(usedPct);
+        const pctText = usedPct == null ? "—" : `${usedPct.toFixed(1)}%`;
+        return `
+          <div>
+            <div class="row">
+              <div class="name mono">${d.name}</div>
+              <div class="mono">${pctText}</div>
+            </div>
+            <div class="bar" style="margin-top:6px">
+              <div class="fill ${cls}" style="width:${Math.max(0, Math.min(100, usedPct ?? 0))}%"></div>
+            </div>
+            <div class="sub mono" style="margin-top:6px">${fmtBytes(d.free_bytes)} free / ${fmtBytes(d.total_bytes)} total</div>
+          </div>
+        `;
+      }
+
+      async function loadOnce() {
+        const res = await fetch(DATA_URL, { cache: "no-store" });
+        if (!res.ok) throw new Error(`fetch ${res.status}`);
+        return await res.json();
+      }
+
+      function setPill(ok, text) {
+        const el = document.getElementById("stalePill");
+        el.className = "pill " + (ok ? "ok" : "bad");
+        el.textContent = text;
+      }
+
+      function render(j) {
+        const now = Date.now() / 1000;
+        const age = j.ts_epoch ? (now - j.ts_epoch) : null;
+        const stale = age == null ? true : (age > 180);
+        setPill(!stale, stale ? `STALE (${age?.toFixed(0) ?? "?"}s)` : `OK (${age.toFixed(0)}s)`);
+
+        document.getElementById("tsText").textContent = j.ts ?? "—";
+        document.getElementById("hostText").textContent = (j.host?.hostname ?? "—") + (j.host?.user ? ` · ${j.host.user}` : "");
+
+        const storageRows = (j.storage ?? []).map(makeStorageRow).join("");
+        document.getElementById("storageRows").innerHTML = storageRows || "<div class='sub muted'>no data</div>";
+
+        document.getElementById("ifText").textContent = j.network?.default_iface ?? "—";
+        document.getElementById("rxText").textContent = fmtRate(j.network?.rate?.rx_bps);
+        document.getElementById("txText").textContent = fmtRate(j.network?.rate?.tx_bps);
+
+        const pings = j.network?.tailscale_ping ?? {};
+        const pingHtml = Object.entries(pings).map(([k,v]) => makePingRow(k, v || {})).join("");
+        document.getElementById("pingRows").innerHTML = pingHtml || "<div class='sub muted'>no ping data</div>";
+
+        const wifi = j.network?.wifi_watchdog;
+        if (wifi && wifi.ts) {
+          const st = wifi.status ?? "unknown";
+          const avg = wifi.ping?.avg_ms != null ? `${wifi.ping.avg_ms.toFixed(0)}ms avg` : "";
+          const ssid = wifi.radio?.ssid ? ` · ${wifi.radio.ssid}` : "";
+          document.getElementById("wifiText").innerHTML =
+            `<span class="mono">wifi_watchdog: ${st}</span><span class="mono">${avg}</span><span class="mono">${ssid}</span>`;
+        } else {
+          document.getElementById("wifiText").textContent = "wifi_watchdog: —";
+        }
+
+        const lenovo = j.remote?.lenovo;
+        if (lenovo && lenovo.ok && Array.isArray(lenovo.drives)) {
+          document.getElementById("lenovoRows").innerHTML = lenovo.drives.map(makeDriveRow).join("");
+          document.getElementById("lenovoNote").textContent = `ts=${lenovo.ts ?? "—"}`;
+        } else if (lenovo && lenovo.error) {
+          document.getElementById("lenovoRows").innerHTML = `<div class="sub err mono">${lenovo.error}</div>`;
+          document.getElementById("lenovoNote").textContent = `ts=${lenovo.ts ?? "—"}`;
+        } else {
+          document.getElementById("lenovoRows").innerHTML = `<div class="sub muted">no data</div>`;
+          document.getElementById("lenovoNote").textContent = "";
+        }
+
+        const errs = (j.errors ?? []).filter(Boolean);
+        document.getElementById("errBox").textContent = errs.length ? errs.join(" / ") : "—";
+      }
+
+      async function refresh() {
+        try {
+          const j = await loadOnce();
+          render(j);
+        } catch (e) {
+          setPill(false, `ERROR (${e})`);
+          document.getElementById("errBox").textContent = String(e);
+        }
+      }
+
+      document.getElementById("refreshBtn").addEventListener("click", refresh);
+      document.getElementById("openJsonBtn").addEventListener("click", () => window.open(DATA_URL, "_blank"));
+      refresh();
+      setInterval(refresh, 10_000);
+    </script>
+  </body>
+</html>
+

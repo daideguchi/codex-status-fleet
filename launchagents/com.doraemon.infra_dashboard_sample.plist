@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.doraemon.infra_dashboard_sample</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>-lc</string>
+      <string>/usr/bin/python3 /Users/dd/08_codex_status_fleet/scripts/infra_dashboard_sample.py --out /Users/dd/doraemon_hq/magic_files/_reports/infra_dashboard.json</string>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/infra_dashboard_sample.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/infra_dashboard_sample.err</string>
+  </dict>
+</plist>
+
